@@ -1,28 +1,22 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
-import 'package:flutter_gapless_loop/flutter_gapless_loop_platform_interface.dart';
-import 'package:flutter_gapless_loop/flutter_gapless_loop_method_channel.dart';
-import 'package:plugin_platform_interface/plugin_platform_interface.dart';
-
-class MockFlutterGaplessLoopPlatform
-    with MockPlatformInterfaceMixin
-    implements FlutterGaplessLoopPlatform {
-  @override
-  Future<String?> getPlatformVersion() => Future.value('42');
-}
 
 void main() {
-  final FlutterGaplessLoopPlatform initialPlatform = FlutterGaplessLoopPlatform.instance;
-
-  test('$MethodChannelFlutterGaplessLoop is the default instance', () {
-    expect(initialPlatform, isInstanceOf<MethodChannelFlutterGaplessLoop>());
+  test('LoopAudioPlayer can be instantiated', () {
+    final player = LoopAudioPlayer();
+    expect(player, isNotNull);
+    player.dispose();
   });
 
-  test('getPlatformVersion', () async {
-    FlutterGaplessLoop flutterGaplessLoopPlugin = FlutterGaplessLoop();
-    MockFlutterGaplessLoopPlatform fakePlatform = MockFlutterGaplessLoopPlatform();
-    FlutterGaplessLoopPlatform.instance = fakePlatform;
-
-    expect(await flutterGaplessLoopPlugin.getPlatformVersion(), '42');
+  test('PlayerState enum has expected values', () {
+    expect(PlayerState.values, containsAll([
+      PlayerState.idle,
+      PlayerState.loading,
+      PlayerState.ready,
+      PlayerState.playing,
+      PlayerState.paused,
+      PlayerState.stopped,
+      PlayerState.error,
+    ]));
   });
 }
