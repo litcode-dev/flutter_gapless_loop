@@ -6,6 +6,13 @@ import 'loop_audio_state.dart';
 ///
 /// Uses [MethodChannel] for commands and [EventChannel] for state/error/route events.
 ///
+/// All methods and getters may throw [PlatformException] if the native engine
+/// returns an error.
+///
+/// Note: This plugin uses a single shared [MethodChannel] — instantiating
+/// multiple [LoopAudioPlayer] objects will result in cross-talk. Use a single
+/// instance per application.
+///
 /// Basic usage:
 /// ```dart
 /// final player = LoopAudioPlayer();
@@ -23,6 +30,8 @@ class LoopAudioPlayer {
 
   late final Stream<Map<Object?, Object?>> _events;
 
+  bool _isDisposed = false;
+
   /// Creates a new [LoopAudioPlayer].
   LoopAudioPlayer() {
     _events = _eventChannel
@@ -30,53 +39,74 @@ class LoopAudioPlayer {
         .cast<Map<Object?, Object?>>();
   }
 
+  void _checkNotDisposed() {
+    if (_isDisposed) throw StateError('LoopAudioPlayer has been disposed.');
+  }
+
   /// Stream of [PlayerState] changes pushed from the native layer.
-  Stream<PlayerState> get stateStream => _events
-      .where((e) => e['type'] == 'stateChange')
-      .map((e) => _parseState(e['state'] as String? ?? 'idle'));
+  Stream<PlayerState> get stateStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'stateChange')
+        .map((e) => _parseState(e['state'] as String? ?? 'idle'));
+  }
 
   /// Stream of error messages pushed from the native layer.
-  Stream<String> get errorStream => _events
-      .where((e) => e['type'] == 'error')
-      .map((e) => e['message'] as String? ?? 'Unknown error');
+  Stream<String> get errorStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'error')
+        .map((e) => e['message'] as String? ?? 'Unknown error');
+  }
 
   /// Stream of [RouteChangeEvent]s pushed when the audio route changes
   /// (e.g. headphones unplugged).
-  Stream<RouteChangeEvent> get routeChangeStream => _events
-      .where((e) => e['type'] == 'routeChange')
-      .map((e) => RouteChangeEvent(_parseReason(e['reason'] as String? ?? '')));
+  Stream<RouteChangeEvent> get routeChangeStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'routeChange')
+        .map((e) => RouteChangeEvent(_parseReason(e['reason'] as String? ?? '')));
+  }
 
-  /// Loads an audio file from a Flutter asset path.
-  ///
-  /// The native layer expects an absolute file system path. Asset resolution
-  /// (mapping asset keys to paths) is handled on the native side via the
+  /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
+  /// The native layer resolves the asset key to an absolute path using the
   /// Flutter asset registry.
+  ///
+  /// Throws [PlatformException] on native error.
   Future<void> load(String assetPath) async {
-    await _channel.invokeMethod<void>('load', {'path': assetPath});
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('loadAsset', {'assetKey': assetPath});
   }
 
   /// Loads an audio file from an absolute file system path.
+  ///
+  /// Throws [PlatformException] on native error.
   Future<void> loadFromFile(String filePath) async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('load', {'path': filePath});
   }
 
   /// Starts looping playback from the beginning (or current loop region start).
   Future<void> play() async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('play');
   }
 
   /// Pauses playback. Call [resume] to continue from the same position.
   Future<void> pause() async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('pause');
   }
 
   /// Resumes paused playback.
   Future<void> resume() async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('resume');
   }
 
   /// Stops playback and resets the playback position.
   Future<void> stop() async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('stop');
   }
 
@@ -84,7 +114,12 @@ class LoopAudioPlayer {
   ///
   /// When set, only the audio between [start] and [end] will loop.
   /// Activates Mode B or D on the native engine.
+  ///
+  /// Throws [PlatformException] on native error.
   Future<void> setLoopRegion(double start, double end) async {
+    _checkNotDisposed();
+    if (start < 0) throw ArgumentError.value(start, 'start', 'must be >= 0');
+    if (end <= start) throw ArgumentError('end ($end) must be greater than start ($start)');
     await _channel.invokeMethod<void>('setLoopRegion', {'start': start, 'end': end});
   }
 
@@ -94,35 +129,47 @@ class LoopAudioPlayer {
   /// `.loops` scheduling path (Mode A or B). Values greater than `0.0` activate
   /// the dual-node crossfade system (Mode C or D).
   Future<void> setCrossfadeDuration(double seconds) async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('setCrossfadeDuration', {'duration': seconds});
   }
 
   /// Sets the playback volume. Range: 0.0 (silent) to 1.0 (full volume).
   Future<void> setVolume(double volume) async {
+    _checkNotDisposed();
+    if (volume < 0.0 || volume > 1.0) {
+      throw ArgumentError.value(volume, 'volume', 'must be between 0.0 and 1.0');
+    }
     await _channel.invokeMethod<void>('setVolume', {'volume': volume});
   }
 
   /// Seeks to [seconds] within the loaded file.
   ///
   /// Note: seeking during `.loops` mode causes a brief reschedule on the native
-  /// side. The next loop boundary will restart from [loopStart], not the seek position.
+  /// side. The next loop boundary will restart from the loop region start, not
+  /// the seek position.
+  ///
+  /// Throws [PlatformException] on native error.
   Future<void> seek(double seconds) async {
+    _checkNotDisposed();
     await _channel.invokeMethod<void>('seek', {'position': seconds});
   }
 
   /// Returns the total duration of the loaded file.
   Future<Duration> get duration async {
+    _checkNotDisposed();
     final secs = await _channel.invokeMethod<double>('getDuration') ?? 0.0;
     return Duration(milliseconds: (secs * 1000).round());
   }
 
   /// Returns the current playback position in seconds.
   Future<double> get currentPosition async {
+    _checkNotDisposed();
     return await _channel.invokeMethod<double>('getCurrentPosition') ?? 0.0;
   }
 
   /// Releases all native resources. This instance cannot be used after calling dispose.
   Future<void> dispose() async {
+    _isDisposed = true;
     await _channel.invokeMethod<void>('dispose');
   }
 
