@@ -1,3 +1,4 @@
+#if os(iOS)
 import Flutter
 import UIKit
 import AVFoundation
@@ -250,3 +251,4 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         }
     }
 }
+#endif // os(iOS)

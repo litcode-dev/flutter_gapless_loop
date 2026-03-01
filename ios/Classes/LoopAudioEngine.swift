@@ -1,3 +1,4 @@
+#if os(iOS)
 import AVFoundation
 import os.log
 
@@ -814,3 +815,4 @@ public class LoopAudioEngine {
         }
     }
 }
+#endif // os(iOS)
