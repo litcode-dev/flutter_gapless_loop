@@ -235,6 +235,14 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             eng.setPan(Float(pan))
             DispatchQueue.main.async { result(nil) }
 
+        case "setPlaybackRate":
+            guard let rate = args?["rate"] as? Double else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'rate' is required", details: nil)) }
+                return
+            }
+            eng.setPlaybackRate(Float(rate))
+            DispatchQueue.main.async { result(nil) }
+
         case "seek":
             guard let pos = args?["position"] as? Double else {
                 DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'position' is required", details: nil)) }

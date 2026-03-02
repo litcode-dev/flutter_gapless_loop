@@ -92,6 +92,7 @@ public class LoopAudioEngine {
     private let nodeA = AVAudioPlayerNode()
     private let nodeB = AVAudioPlayerNode()   // only connected when crossfadeDuration > 0
     private let mixerNode = AVAudioMixerNode()
+    private let timePitchNode = AVAudioUnitTimePitch()
 
     /// All AVAudioEngine operations MUST run on this queue.
     /// This serial queue acts as the synchronization mechanism — no locks needed.
@@ -441,6 +442,18 @@ public class LoopAudioEngine {
         }
     }
 
+    /// Sets the playback rate (speed) while preserving pitch.
+    ///
+    /// [rate] is a multiplier: 1.0 = normal, 2.0 = double speed, 0.5 = half speed.
+    /// Uses `AVAudioUnitTimePitch.rate` for pitch-independent time stretching.
+    /// Persists across loads — `timePitchNode` is never torn down between loads.
+    public func setPlaybackRate(_ rate: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.timePitchNode.rate = max(0.03125, min(32.0, rate))
+        }
+    }
+
     /// Seeks to a position within the loaded file.
     ///
     /// In Modes A and B, seeking stops nodeA, plays the remaining frames of the
@@ -510,8 +523,10 @@ public class LoopAudioEngine {
         engine.attach(nodeA)
         engine.attach(mixerNode)
         engine.connect(nodeA, to: mixerNode, format: format)
-        engine.connect(mixerNode, to: engine.mainMixerNode, format: format)
-        logger.debug("Engine graph configured: nodeA → mixerNode → mainMixer → output")
+        engine.attach(timePitchNode)
+        engine.connect(mixerNode, to: timePitchNode, format: format)
+        engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
+        logger.debug("Engine graph configured: nodeA → mixerNode → timePitch → mainMixer → output")
     }
 
     // MARK: - Private: Scheduling
