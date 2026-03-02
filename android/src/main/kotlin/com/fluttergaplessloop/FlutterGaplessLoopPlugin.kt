@@ -93,7 +93,11 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     // ─── MethodChannel.MethodCallHandler ─────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: Result) {
-        val eng = getOrCreateEngine()
+        val eng = try {
+            getOrCreateEngine()
+        } catch (e: IllegalStateException) {
+            return result.error("NOT_ATTACHED", e.message, null)
+        }
 
         when (call.method) {
 
@@ -120,8 +124,10 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 val binding = pluginBinding
                     ?: return result.error("REGISTRAR_MISSING", "Plugin not attached", null)
 
-                // Resolve Flutter asset key → relative APK assets path
-                val assetPath = binding.flutterAssets.getAssetFilePathByName(assetKey)
+                // Resolve Flutter asset key (e.g. "assets/loop.wav") → relative APK assets path.
+                // getAssetFilePathBySubpath handles full subpath keys, including subdirectories,
+                // unlike getAssetFilePathByName which only matches by filename.
+                val assetPath = binding.flutterAssets.getAssetFilePathBySubpath(assetKey)
                     ?: return result.error("ASSET_NOT_FOUND", "Asset not found: $assetKey", null)
 
                 // Open asset as AssetFileDescriptor — works for assets inside the APK
