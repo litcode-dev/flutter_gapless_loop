@@ -429,6 +429,17 @@ public class LoopAudioEngine {
         }
     }
 
+    /// Sets the stereo pan position. Range: -1.0 (full left) to 1.0 (full right).
+    ///
+    /// Delegates to `AVAudioMixerNode.pan`, which applies an equal-power curve
+    /// internally. Persists across loads — `mixerNode` is never torn down between loads.
+    public func setPan(_ pan: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.mixerNode.pan = max(-1.0, min(1.0, pan))
+        }
+    }
+
     /// Seeks to a position within the loaded file.
     ///
     /// In Modes A and B, seeking stops nodeA, plays the remaining frames of the

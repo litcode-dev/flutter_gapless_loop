@@ -227,6 +227,14 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             eng.setVolume(Float(vol))
             DispatchQueue.main.async { result(nil) }
 
+        case "setPan":
+            guard let pan = args?["pan"] as? Double else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'pan' is required", details: nil)) }
+                return
+            }
+            eng.setPan(Float(pan))
+            DispatchQueue.main.async { result(nil) }
+
         case "seek":
             guard let pos = args?["position"] as? Double else {
                 DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'position' is required", details: nil)) }
