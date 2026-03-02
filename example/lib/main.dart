@@ -43,6 +43,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   double _pan = 0.0;
 
   // BPM controls
+  double _detectedBpm = 0.0; // auto-detected; used as rate base
   double _manualBpm = 0.0;
   final _bpmController = TextEditingController();
   final List<DateTime> _tapTimes = [];
@@ -65,10 +66,12 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
       setState(() {
         _bpmResult = r;
         if (r.bpm > 0) {
+          _detectedBpm = r.bpm;
           _manualBpm = r.bpm;
           _bpmController.text = r.bpm.toStringAsFixed(1);
         }
       });
+      // Rate is 1.0 when manualBpm == detectedBpm, so nothing changes on detection.
     });
   }
 
@@ -125,12 +128,14 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
       await _player.loadFromFile(path);
       final dur = await _player.duration;
       _tapTimes.clear();
+      await _player.setPlaybackRate(1.0);
       setState(() {
         _duration = dur.inMilliseconds / 1000.0;
         _loopStart = 0.0;
         _loopEnd = _duration;
         _position = 0.0;
         _bpmResult = null; // cleared until bpmStream fires
+        _detectedBpm = 0.0;
         _manualBpm = 0.0;
         _bpmController.text = '';
       });
@@ -191,11 +196,18 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     }
   }
 
+  void _applyPlaybackRate() {
+    if (_detectedBpm <= 0 || !_isReady) return;
+    final rate = _manualBpm / _detectedBpm;
+    _player.setPlaybackRate(rate).catchError((_) {});
+  }
+
   void _adjustBpm(double delta) {
     setState(() {
       _manualBpm = (_manualBpm + delta).clamp(20.0, 300.0).toDouble();
       _bpmController.text = _manualBpm.toStringAsFixed(1);
     });
+    _applyPlaybackRate();
   }
 
   void _onTapTempo() {
@@ -217,6 +229,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _manualBpm = (60.0 / avg).clamp(20.0, 300.0).toDouble();
         _bpmController.text = _manualBpm.toStringAsFixed(1);
       });
+      _applyPlaybackRate();
     }
   }
 
@@ -492,6 +505,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                           _manualBpm = parsed.clamp(20.0, 300.0).toDouble();
                           _bpmController.text = _manualBpm.toStringAsFixed(1);
                         });
+                        _applyPlaybackRate();
                       } else {
                         _bpmController.text = _manualBpm > 0 ? _manualBpm.toStringAsFixed(1) : '';
                       }
@@ -536,6 +550,16 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 ),
               ],
             ),
+            if (_detectedBpm > 0 && _manualBpm > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Speed: ×${(_manualBpm / _detectedBpm).toStringAsFixed(2)}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                ),
+              ),
 
             const Divider(),
 
