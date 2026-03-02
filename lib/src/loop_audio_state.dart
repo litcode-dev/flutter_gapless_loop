@@ -42,3 +42,34 @@ class RouteChangeEvent {
   /// Creates a [RouteChangeEvent] with the given [reason].
   const RouteChangeEvent(this.reason);
 }
+
+/// The result of BPM/tempo detection on a loaded audio file.
+///
+/// Emitted via [LoopAudioPlayer.bpmStream] after every successful load.
+class BpmResult {
+  /// Estimated tempo in beats per minute. `0.0` if detection was skipped
+  /// (audio shorter than 2 seconds or completely silent).
+  final double bpm;
+
+  /// Confidence of the estimate in [0.0, 1.0]. Values above 0.5 indicate
+  /// reliable detection.
+  final double confidence;
+
+  /// Beat timestamps in seconds from the start of the file.
+  final List<double> beats;
+
+  const BpmResult({
+    required this.bpm,
+    required this.confidence,
+    required this.beats,
+  });
+
+  /// Creates a [BpmResult] from the raw map sent by the native event channel.
+  factory BpmResult.fromMap(Map<Object?, Object?> map) => BpmResult(
+    bpm:        (map['bpm'] as num).toDouble(),
+    confidence: (map['confidence'] as num).toDouble(),
+    beats: (map['beats'] as List<Object?>)
+        .map((e) => (e as num).toDouble())
+        .toList(),
+  );
+}

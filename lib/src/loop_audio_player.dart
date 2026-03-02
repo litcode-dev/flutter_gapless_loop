@@ -68,6 +68,19 @@ class LoopAudioPlayer {
         .map((e) => RouteChangeEvent(_parseReason(e['reason'] as String? ?? '')));
   }
 
+  /// Stream of [BpmResult] emitted automatically after each successful load.
+  ///
+  /// Fires once per load, shortly after [stateStream] emits [PlayerState.ready],
+  /// when the background beat-tracking analysis completes.
+  ///
+  /// Returns `bpm: 0.0` if the audio is shorter than 2 seconds or silent.
+  Stream<BpmResult> get bpmStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'bpmDetected')
+        .map((e) => BpmResult.fromMap(e));
+  }
+
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
   /// The native layer resolves the asset key to an absolute path using the
   /// Flutter asset registry.
