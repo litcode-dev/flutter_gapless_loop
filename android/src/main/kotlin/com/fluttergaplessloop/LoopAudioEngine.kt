@@ -702,8 +702,10 @@ class LoopAudioEngine(private val context: Context) {
         val pcm = pcmBuffer ?: return
         val sr  = sampleRate
         val ch  = channelCount
+        Log.i(TAG, "BPM detection started: ${pcm.size / ch} frames @ ${sr}Hz")
         bpmJob = engineScope.launch(Dispatchers.Default) {
             val result = BpmDetector.detect(pcm, sr, ch)
+            Log.i(TAG, "BPM detection complete: bpm=${result.bpm.toInt()} confidence=${"%.2f".format(result.confidence)} beats=${result.beats.size}")
             withContext(Dispatchers.Main) {
                 onBpmDetected?.invoke(result)
             }
