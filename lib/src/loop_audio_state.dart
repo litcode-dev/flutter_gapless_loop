@@ -66,9 +66,9 @@ class BpmResult {
 
   /// Creates a [BpmResult] from the raw map sent by the native event channel.
   factory BpmResult.fromMap(Map<Object?, Object?> map) => BpmResult(
-    bpm:        (map['bpm'] as num).toDouble(),
-    confidence: (map['confidence'] as num).toDouble(),
-    beats: (map['beats'] as List<Object?>)
+    bpm:        (map['bpm'] as num? ?? 0).toDouble(),
+    confidence: (map['confidence'] as num? ?? 0).toDouble(),
+    beats: ((map['beats'] as List<Object?>?) ?? const [])
         .map((e) => (e as num).toDouble())
         .toList(),
   );

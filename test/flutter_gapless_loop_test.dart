@@ -52,5 +52,25 @@ void main() {
       });
       expect(result.beats, isEmpty);
     });
+
+    test('fromMap handles map with extra type key (as sent by event channel)', () {
+      final result = BpmResult.fromMap({
+        'type': 'bpmDetected',
+        'bpm': 120.0,
+        'confidence': 0.9,
+        'beats': [0.23, 0.70],
+      });
+      expect(result.bpm, 120.0);
+      expect(result.beats.length, 2);
+    });
+
+    test('fromMap handles integer elements in beats list', () {
+      final result = BpmResult.fromMap({
+        'bpm': 0.0,
+        'confidence': 0.0,
+        'beats': [0, 1, 2],  // integer timestamps from native
+      });
+      expect(result.beats, [0.0, 1.0, 2.0]);
+    });
   });
 }
