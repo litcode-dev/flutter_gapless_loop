@@ -157,12 +157,15 @@ class LoopAudioPlayer {
 
   /// Sets the stereo pan position.
   ///
-  /// [pan] must be in [-1.0, 1.0]:
+  /// [pan] is in [-1.0, 1.0]:
   /// - `-1.0` = full left
   /// - `0.0`  = centre (default)
   /// - `1.0`  = full right
   ///
+  /// Values outside the range are clamped to [-1.0, 1.0].
   /// Takes effect immediately. Persists across loads.
+  ///
+  /// Throws [PlatformException] on native error.
   Future<void> setPan(double pan) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>('setPan', {'pan': pan.clamp(-1.0, 1.0)});
