@@ -40,6 +40,13 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   double _loopEnd = 0.0;
   double _crossfade = 0.0; // 0 to 0.5 seconds
   double _volume = 1.0;
+  double _pan = 0.0;
+
+  // BPM controls
+  double _manualBpm = 0.0;
+  final _bpmController = TextEditingController();
+  final List<DateTime> _tapTimes = [];
+  Timer? _bpmRepeatTimer;
 
   BpmResult? _bpmResult;
 
@@ -53,7 +60,15 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     super.initState();
     _stateSub = _player.stateStream.listen(_onStateChange);
     _errorSub = _player.errorStream.listen(_onError);
-    _bpmSub   = _player.bpmStream.listen((r) => setState(() => _bpmResult = r));
+    _bpmSub = _player.bpmStream.listen((r) {
+      setState(() {
+        _bpmResult = r;
+        if (r.bpm > 0) {
+          _manualBpm = r.bpm;
+          _bpmController.text = r.bpm.toStringAsFixed(1);
+        }
+      });
+    });
   }
 
   @override
@@ -62,6 +77,8 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     _errorSub?.cancel();
     _bpmSub?.cancel();
     _positionTimer?.cancel();
+    _bpmRepeatTimer?.cancel();
+    _bpmController.dispose();
     _player.dispose();
     super.dispose();
   }
@@ -112,6 +129,9 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _loopEnd = _duration;
         _position = 0.0;
         _bpmResult = null; // cleared until bpmStream fires
+        _manualBpm = 0.0;
+        _bpmController.text = '';
+        _tapTimes.clear();
       });
     } catch (e) {
       _onError(e.toString());
@@ -165,6 +185,59 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     setState(() => _volume = value);
     try {
       await _player.setVolume(value);
+    } catch (e) {
+      _onError(e.toString());
+    }
+  }
+
+  void _adjustBpm(double delta) {
+    setState(() {
+      _manualBpm = (_manualBpm + delta).clamp(20.0, 300.0);
+      _bpmController.text = _manualBpm.toStringAsFixed(1);
+    });
+  }
+
+  void _onTapTempo() {
+    final now = DateTime.now();
+    if (_tapTimes.isNotEmpty &&
+        now.difference(_tapTimes.last).inMilliseconds > 3000) {
+      _tapTimes.clear();
+    }
+    _tapTimes.add(now);
+    if (_tapTimes.length > 8) _tapTimes.removeAt(0);
+    if (_tapTimes.length >= 2) {
+      final intervals = <double>[];
+      for (int i = 1; i < _tapTimes.length; i++) {
+        intervals.add(
+            _tapTimes[i].difference(_tapTimes[i - 1]).inMilliseconds / 1000.0);
+      }
+      final avg = intervals.reduce((a, b) => a + b) / intervals.length;
+      setState(() {
+        _manualBpm = (60.0 / avg).clamp(20.0, 300.0);
+        _bpmController.text = _manualBpm.toStringAsFixed(1);
+      });
+    }
+  }
+
+  void _snapToBeat() {
+    if (_manualBpm <= 0 || !_isReady) return;
+    final beatPeriod = 60.0 / _manualBpm;
+    var newStart = (_loopStart / beatPeriod).round() * beatPeriod;
+    var newEnd   = (_loopEnd   / beatPeriod).round() * beatPeriod;
+    newStart = newStart.clamp(0.0, _duration);
+    newEnd   = newEnd.clamp(0.0, _duration);
+    if (newStart >= newEnd) return;
+    setState(() {
+      _loopStart = newStart;
+      _loopEnd   = newEnd;
+    });
+    _setLoopRegion();
+  }
+
+  Future<void> _setPan(double value) async {
+    setState(() => _pan = value);
+    try {
+      await _player.setPan(value);
     } catch (e) {
       _onError(e.toString());
     }
@@ -372,6 +445,121 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
             Text('BPM Detection', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             _BpmCard(result: _bpmResult, isReady: _isReady),
+
+            const Divider(),
+
+            // ── BPM Controls ──────────────────────────────────────────
+            Text('BPM Controls', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                // Decrement button with long-press repeat
+                GestureDetector(
+                  onLongPressStart: (_) {
+                    _bpmRepeatTimer = Timer(const Duration(milliseconds: 400), () {
+                      _bpmRepeatTimer = Timer.periodic(
+                          const Duration(milliseconds: 100), (_) => _adjustBpm(-1.0));
+                    });
+                  },
+                  onLongPressEnd: (_) {
+                    _bpmRepeatTimer?.cancel();
+                    _bpmRepeatTimer = null;
+                  },
+                  child: IconButton(
+                    icon: const Icon(Icons.remove),
+                    onPressed: _isReady ? () => _adjustBpm(-1.0) : null,
+                  ),
+                ),
+                // Manual BPM text field
+                Expanded(
+                  child: TextField(
+                    controller: _bpmController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'BPM',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    enabled: _isReady,
+                    onSubmitted: (v) {
+                      final parsed = double.tryParse(v);
+                      if (parsed != null) {
+                        setState(() {
+                          _manualBpm = parsed.clamp(20.0, 300.0);
+                          _bpmController.text = _manualBpm.toStringAsFixed(1);
+                        });
+                      }
+                    },
+                  ),
+                ),
+                // Increment button with long-press repeat
+                GestureDetector(
+                  onLongPressStart: (_) {
+                    _bpmRepeatTimer = Timer(const Duration(milliseconds: 400), () {
+                      _bpmRepeatTimer = Timer.periodic(
+                          const Duration(milliseconds: 100), (_) => _adjustBpm(1.0));
+                    });
+                  },
+                  onLongPressEnd: (_) {
+                    _bpmRepeatTimer?.cancel();
+                    _bpmRepeatTimer = null;
+                  },
+                  child: IconButton(
+                    icon: const Icon(Icons.add),
+                    onPressed: _isReady ? () => _adjustBpm(1.0) : null,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _isReady ? _onTapTempo : null,
+                  icon: const Icon(Icons.touch_app),
+                  label: const Text('Tap Tempo'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: _isReady && _manualBpm > 0 ? _snapToBeat : null,
+                  icon: const Icon(Icons.grid_on),
+                  label: const Text('Snap to Beat'),
+                ),
+              ],
+            ),
+
+            const Divider(),
+
+            // ── Panning ────────────────────────────────────────────────
+            Text('Panning', style: Theme.of(context).textTheme.titleSmall),
+            Row(
+              children: [
+                const SizedBox(width: 24, child: Text('L', textAlign: TextAlign.center)),
+                Expanded(
+                  child: Slider(
+                    value: _pan,
+                    min: -1.0,
+                    max: 1.0,
+                    divisions: 200,
+                    onChanged: _isReady ? _setPan : null,
+                  ),
+                ),
+                const SizedBox(width: 24, child: Text('R', textAlign: TextAlign.center)),
+              ],
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _pan == 0.0
+                      ? 'Centre'
+                      : _pan < 0
+                          ? 'L ${(-_pan * 100).toStringAsFixed(0)}%'
+                          : 'R ${(_pan * 100).toStringAsFixed(0)}%',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
           ],
         ),
       ),
