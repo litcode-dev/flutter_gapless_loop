@@ -82,6 +82,8 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         }
 
         eng.onBpmDetected = { [weak self] bpmResult in
+            // Already on main thread (LoopAudioEngine guarantees it), but
+            // async-to-main matches the pattern used by all other callbacks.
             DispatchQueue.main.async {
                 self?.eventSink?([
                     "type":       "bpmDetected",

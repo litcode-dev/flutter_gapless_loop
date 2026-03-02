@@ -115,6 +115,7 @@ public class LoopAudioEngine {
 
     /// Token for the in-flight background BPM detection task.
     /// Cancelled when a new file is loaded or dispose() is called.
+    /// Must only be accessed from the main thread (matches all call sites in FlutterGaplessLoopPlugin).
     private var bpmWorkItem: DispatchWorkItem?
 
     // MARK: - Private: Configuration
@@ -832,8 +833,10 @@ public class LoopAudioEngine {
     /// Launches BPM detection for `buffer` on a utility-priority background thread.
     /// On completion, dispatches `onBpmDetected` to the main queue.
     private func triggerBpmDetection(buffer: AVAudioPCMBuffer) {
-        let workItem = DispatchWorkItem { [weak self] in
+        var workItem: DispatchWorkItem!
+        workItem = DispatchWorkItem { [weak self] in
             let result = BpmDetector.detect(buffer: buffer)
+            guard !workItem.isCancelled else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.onBpmDetected?(result)
             }
