@@ -18,6 +18,13 @@ import kotlin.math.sqrt
  *  3. Weighted autocorrelation (Gaussian prior at 120 BPM) → BPM estimate.
  *  4. Dynamic programming forward pass → globally consistent beat sequence.
  */
+/** Public BPM detection result exposed via [LoopAudioEngine.onBpmDetected]. */
+data class BpmDetectionResult(
+    val bpm: Double,          // 0.0 if detection failed/skipped
+    val confidence: Double,   // [0.0, 1.0]
+    val beats: List<Double>   // timestamps in seconds
+)
+
 internal object BpmDetector {
 
     private const val FRAME_SIZE          = 512
@@ -29,27 +36,20 @@ internal object BpmDetector {
     private const val DP_LAMBDA           = 100.0
     private const val MIN_DURATION_SECS   = 2.0
 
-    /** Output of BPM detection. */
-    data class BpmResult(
-        val bpm: Double,          // 0.0 if detection failed/skipped
-        val confidence: Double,   // [0.0, 1.0]
-        val beats: List<Double>   // timestamps in seconds
-    )
-
     /**
      * Detects BPM and beat timestamps from decoded PCM audio.
      *
      * @param pcm         Interleaved float samples, range [-1.0, 1.0].
      * @param sampleRate  Sample rate in Hz (e.g. 44100, 48000).
      * @param channelCount 1 (mono) or 2 (stereo).
-     * @return [BpmResult] with bpm=0.0 and empty beats if audio is too short or silent.
+     * @return [BpmDetectionResult] with bpm=0.0 and empty beats if audio is too short or silent.
      */
-    fun detect(pcm: FloatArray, sampleRate: Int, channelCount: Int): BpmResult {
+    fun detect(pcm: FloatArray, sampleRate: Int, channelCount: Int): BpmDetectionResult {
         val totalFrames     = pcm.size / channelCount
         val durationSeconds = totalFrames.toDouble() / sampleRate
 
         if (durationSeconds < MIN_DURATION_SECS) {
-            return BpmResult(0.0, 0.0, emptyList())
+            return BpmDetectionResult(0.0, 0.0, emptyList())
         }
 
         // Stage 1: Onset strength envelope
@@ -57,7 +57,7 @@ internal object BpmDetector {
         val onset = computeOnsetStrength(mono)
 
         val maxOnset = onset.maxOrNull() ?: 0f
-        if (maxOnset == 0f) return BpmResult(0.0, 0.0, emptyList())
+        if (maxOnset == 0f) return BpmDetectionResult(0.0, 0.0, emptyList())
         for (i in onset.indices) onset[i] /= maxOnset   // normalize to [0, 1]
 
         // Stage 2: BPM estimation via weighted autocorrelation
@@ -65,11 +65,11 @@ internal object BpmDetector {
         val lagMax = (sampleRate.toDouble() / (MIN_BPM / 60.0) / HOP_SIZE).toInt()
             .coerceAtMost(onset.size / 2)
 
-        if (lagMin >= lagMax) return BpmResult(0.0, 0.0, emptyList())
+        if (lagMin >= lagMax) return BpmDetectionResult(0.0, 0.0, emptyList())
 
         val ac      = autocorrelate(onset, lagMin, lagMax, sampleRate)
         val bestIdx = ac.indices.maxByOrNull { ac[it] }
-            ?: return BpmResult(0.0, 0.0, emptyList())
+            ?: return BpmDetectionResult(0.0, 0.0, emptyList())
         val actualLag    = bestIdx + lagMin
         val estimatedBpm = 60.0 * sampleRate / (actualLag.toDouble() * HOP_SIZE)
         val confidence   = ac[bestIdx].toDouble().coerceIn(0.0, 1.0)
@@ -78,7 +78,7 @@ internal object BpmDetector {
         val period = round(sampleRate.toDouble() / (estimatedBpm / 60.0) / HOP_SIZE).toInt()
         val beats  = trackBeats(onset, period, sampleRate)
 
-        return BpmResult(estimatedBpm, confidence, beats)
+        return BpmDetectionResult(estimatedBpm, confidence, beats)
     }
 
     // ─── Private Helpers ──────────────────────────────────────────────────────

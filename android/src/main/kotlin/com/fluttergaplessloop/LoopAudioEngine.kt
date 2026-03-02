@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -91,7 +92,7 @@ class LoopAudioEngine(private val context: Context) {
     var onRouteChange: ((String) -> Unit)? = null
 
     /** Invoked when BPM detection completes after a load. Always called on the main thread. */
-    internal var onBpmDetected: ((BpmDetector.BpmResult) -> Unit)? = null
+    var onBpmDetected: ((BpmDetectionResult) -> Unit)? = null
 
     // ─── Public read-only state ───────────────────────────────────────────────
 
@@ -117,6 +118,7 @@ class LoopAudioEngine(private val context: Context) {
         }
 
     /** Coroutine job for background BPM detection. Cancelled on each new load and dispose(). */
+    @Volatile
     private var bpmJob: Job? = null
 
     // ─── Private: decoded audio ───────────────────────────────────────────────
@@ -700,9 +702,9 @@ class LoopAudioEngine(private val context: Context) {
         val pcm = pcmBuffer ?: return
         val sr  = sampleRate
         val ch  = channelCount
-        bpmJob = engineScope.launch(Dispatchers.IO) {
+        bpmJob = engineScope.launch(Dispatchers.Default) {
             val result = BpmDetector.detect(pcm, sr, ch)
-            engineScope.launch {          // switches to Dispatchers.Main (scope default)
+            withContext(Dispatchers.Main) {
                 onBpmDetected?.invoke(result)
             }
         }
