@@ -405,12 +405,13 @@ class LoopAudioEngine(private val context: Context) {
         audioTrack?.setVolume(volume.coerceIn(0f, 1f))
     }
 
-    /**
-     * Sets the stereo pan position. [pan] is in [−1.0, 1.0].
-     * Thread-safe via @Volatile + [AudioTrack.setStereoVolume].
-     */
+    /** Backing field for [setPan]. Written from main thread; read by [applyPan]. */
     @Volatile private var panValue: Float = 0f
 
+    /**
+     * Sets the stereo pan position. [pan] is in [−1.0, 1.0].
+     * Called on the main thread. [AudioTrack.setStereoVolume] is thread-safe.
+     */
     fun setPan(pan: Float) {
         panValue = pan.coerceIn(-1f, 1f)
         applyPan()
