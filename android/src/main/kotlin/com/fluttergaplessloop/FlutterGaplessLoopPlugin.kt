@@ -231,6 +231,14 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         eng.onRouteChange = { reason ->
             sendEvent(mapOf("type" to "routeChange", "reason" to reason))
         }
+        eng.onBpmDetected = { bpmResult ->
+            sendEvent(mapOf(
+                "type"       to "bpmDetected",
+                "bpm"        to bpmResult.bpm,
+                "confidence" to bpmResult.confidence,
+                "beats"      to bpmResult.beats
+            ))
+        }
     }
 
     /**

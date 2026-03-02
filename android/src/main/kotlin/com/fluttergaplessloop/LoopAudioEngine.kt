@@ -7,6 +7,7 @@ import android.os.Process
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -89,6 +90,9 @@ class LoopAudioEngine(private val context: Context) {
      */
     var onRouteChange: ((String) -> Unit)? = null
 
+    /** Invoked when BPM detection completes after a load. Always called on the main thread. */
+    internal var onBpmDetected: ((BpmDetector.BpmResult) -> Unit)? = null
+
     // ─── Public read-only state ───────────────────────────────────────────────
 
     private var _state: EngineState = EngineState.Idle
@@ -111,6 +115,9 @@ class LoopAudioEngine(private val context: Context) {
             val frames = currentFrameAtomic.get()
             return if (sampleRate > 0) frames.toDouble() / sampleRate.toDouble() else 0.0
         }
+
+    /** Coroutine job for background BPM detection. Cancelled on each new load and dispose(). */
+    private var bpmJob: Job? = null
 
     // ─── Private: decoded audio ───────────────────────────────────────────────
 
@@ -189,12 +196,14 @@ class LoopAudioEngine(private val context: Context) {
      * @throws LoopAudioException on any IO or decode failure.
      */
     suspend fun loadFile(path: String) {
+        bpmJob?.cancel()
         setState(EngineState.Loading)
         try {
             val decoded = AudioFileLoader.decode(path)
             AudioFileLoader.applyMicroFade(decoded.pcm, decoded.sampleRate, decoded.channelCount)
             commitDecodedAudio(decoded)
             setState(EngineState.Ready)
+            launchBpmDetection()
         } catch (e: LoopAudioException) {
             setState(EngineState.Error(e.error))
             onError?.invoke(e.error)
@@ -215,12 +224,14 @@ class LoopAudioEngine(private val context: Context) {
      * @throws LoopAudioException on decode failure.
      */
     suspend fun loadAsset(assetKey: String, assetFd: android.content.res.AssetFileDescriptor) {
+        bpmJob?.cancel()
         setState(EngineState.Loading)
         try {
             val decoded = AudioFileLoader.decodeAsset(assetFd)
             AudioFileLoader.applyMicroFade(decoded.pcm, decoded.sampleRate, decoded.channelCount)
             commitDecodedAudio(decoded)
             setState(EngineState.Ready)
+            launchBpmDetection()
             Log.i(TAG, "loadAsset complete: $assetKey")
         } catch (e: LoopAudioException) {
             setState(EngineState.Error(e.error))
@@ -400,6 +411,8 @@ class LoopAudioEngine(private val context: Context) {
         sessionManager.dispose()
         audioTrack?.release()
         audioTrack = null
+        bpmJob?.cancel()
+        bpmJob = null
         pcmBuffer = null
         crossfadeBlockRef.set(null)
         crossfadeEngine = null
@@ -673,6 +686,26 @@ class LoopAudioEngine(private val context: Context) {
         val block = engine.computeCrossfadeBlock(tail, head)
         crossfadeBlockRef.set(block)
         Log.d(TAG, "Crossfade block recomputed: ${block.size} samples")
+    }
+
+    // ─── Private: BPM detection ───────────────────────────────────────────────
+
+    /**
+     * Launches BPM detection on [Dispatchers.IO].
+     * Captures the current [pcmBuffer], [sampleRate], and [channelCount] by value
+     * so the write thread cannot cause a data race.
+     * On completion, invokes [onBpmDetected] on the main thread.
+     */
+    private fun launchBpmDetection() {
+        val pcm = pcmBuffer ?: return
+        val sr  = sampleRate
+        val ch  = channelCount
+        bpmJob = engineScope.launch(Dispatchers.IO) {
+            val result = BpmDetector.detect(pcm, sr, ch)
+            engineScope.launch {          // switches to Dispatchers.Main (scope default)
+                onBpmDetected?.invoke(result)
+            }
+        }
     }
 
     // ─── Private: state + session wiring ─────────────────────────────────────
