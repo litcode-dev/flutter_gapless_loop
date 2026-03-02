@@ -127,3 +127,95 @@ class CrossfadeEngineTest {
         assertEquals(n, block.size)
     }
 }
+
+class BpmDetectorTest {
+
+    /** Generates a mono float array with 10ms-wide amplitude pulses at every beat. */
+    private fun pulseAt(bpm: Double, sampleRate: Int = 44100, durationSecs: Double = 10.0): FloatArray {
+        val n = (sampleRate * durationSecs).toInt()
+        val pcm = FloatArray(n)
+        val periodSamples = (sampleRate * 60.0 / bpm).toInt()
+        val pulseLen = (sampleRate * 0.01).toInt() // 10ms pulse
+        var pos = 0
+        while (pos < n) {
+            val end = minOf(pos + pulseLen, n)
+            for (i in pos until end) pcm[i] = 1.0f
+            pos += periodSamples
+        }
+        return pcm
+    }
+
+    @Test
+    fun `detect returns zero result for audio shorter than 2 seconds`() {
+        val pcm = FloatArray(44100) { 0.5f }   // 1 second at 44100Hz
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(0.0, result.bpm, 0.001)
+        assertEquals(0.0, result.confidence, 0.001)
+        assertTrue(result.beats.isEmpty())
+    }
+
+    @Test
+    fun `detect returns zero result for silence`() {
+        val pcm = FloatArray(44100 * 5) { 0f }  // 5 seconds of silence
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(0.0, result.bpm, 0.001)
+        assertTrue(result.beats.isEmpty())
+    }
+
+    @Test
+    fun `detect 120 BPM pulse train within 2 BPM tolerance`() {
+        val pcm = pulseAt(120.0)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(
+            abs(result.bpm - 120.0) <= 2.0,
+            "Expected ~120 BPM, got ${result.bpm}"
+        )
+        assertTrue(result.confidence > 0.5, "Expected confidence > 0.5, got ${result.confidence}")
+    }
+
+    @Test
+    fun `detect 128 BPM pulse train within 2 BPM tolerance`() {
+        val pcm = pulseAt(128.0)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(
+            abs(result.bpm - 128.0) <= 2.0,
+            "Expected ~128 BPM, got ${result.bpm}"
+        )
+    }
+
+    @Test
+    fun `stereo audio produces same BPM as mono`() {
+        val mono = pulseAt(120.0)
+        val stereo = FloatArray(mono.size * 2) { i -> mono[i / 2] }
+        val monoResult   = BpmDetector.detect(mono, 44100, 1)
+        val stereoResult = BpmDetector.detect(stereo, 44100, 2)
+        assertEquals(monoResult.bpm, stereoResult.bpm, 0.001)
+    }
+
+    @Test
+    fun `beat timestamps are monotonically increasing`() {
+        val pcm = pulseAt(120.0)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(result.beats.size >= 2)
+        for (i in 1 until result.beats.size) {
+            assertTrue(result.beats[i] > result.beats[i - 1],
+                "Non-monotonic: beats[$i]=${result.beats[i]} <= beats[${i-1}]=${result.beats[i-1]}")
+        }
+    }
+
+    @Test
+    fun `no beats in micro-fade region (first 5ms)`() {
+        val pcm = pulseAt(120.0)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(result.beats.all { it >= 0.005 },
+            "Found beat before 5ms: ${result.beats.filter { it < 0.005 }}")
+    }
+
+    @Test
+    fun `confidence is in range 0 to 1`() {
+        val pcm = pulseAt(120.0)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(result.confidence in 0.0..1.0,
+            "Confidence out of range: ${result.confidence}")
+    }
+}
