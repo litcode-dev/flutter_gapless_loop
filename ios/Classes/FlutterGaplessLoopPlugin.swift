@@ -81,6 +81,17 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             }
         }
 
+        eng.onBpmDetected = { [weak self] bpmResult in
+            DispatchQueue.main.async {
+                self?.eventSink?([
+                    "type":       "bpmDetected",
+                    "bpm":        bpmResult.bpm,
+                    "confidence": bpmResult.confidence,
+                    "beats":      bpmResult.beats
+                ])
+            }
+        }
+
         engine = eng
         logger.info("LoopAudioEngine created")
     }

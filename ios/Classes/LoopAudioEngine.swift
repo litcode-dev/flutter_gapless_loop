@@ -82,6 +82,10 @@ public class LoopAudioEngine {
     /// The string is one of: "headphonesUnplugged", "categoryChange".
     public var onRouteChange: ((String) -> Void)?
 
+    /// Called when BPM detection completes after a load.
+    /// Always dispatched to `DispatchQueue.main`.
+    public var onBpmDetected: ((BpmResult) -> Void)?
+
     // MARK: - Private: Engine Infrastructure
 
     private let engine = AVAudioEngine()
@@ -108,6 +112,10 @@ public class LoopAudioEngine {
 
     /// Pre-computed equal-power crossfade ramp. Non-nil only in Modes C and D.
     private var crossfadeRamp: CrossfadeRamp?
+
+    /// Token for the in-flight background BPM detection task.
+    /// Cancelled when a new file is loaded or dispose() is called.
+    private var bpmWorkItem: DispatchWorkItem?
 
     // MARK: - Private: Configuration
 
@@ -182,6 +190,7 @@ public class LoopAudioEngine {
     /// - Throws: `LoopEngineError` if the file cannot be read or the engine fails to start.
     public func loadFile(url: URL) throws {
         logger.info("loadFile: \(url.lastPathComponent)")
+        bpmWorkItem?.cancel()
 
         // Phase 1: I/O off queue — safe since we only READ the file
         setState(.loading)  // keep this off-queue for immediate feedback
@@ -255,6 +264,7 @@ public class LoopAudioEngine {
         if let err = engineStartError {
             throw LoopEngineError.engineStartFailed(underlying: err)
         }
+        triggerBpmDetection(buffer: buffer)
         logger.info("loadFile complete: duration=\(computedDuration)s")
     }
 
@@ -463,6 +473,8 @@ public class LoopAudioEngine {
 
     /// Releases all native resources. The engine cannot be used after this call.
     public func dispose() {
+        bpmWorkItem?.cancel()
+        bpmWorkItem = nil
         audioQueue.async { [weak self] in
             guard let self else { return }
             self.nodeA.stop()
@@ -813,6 +825,21 @@ public class LoopAudioEngine {
                 break
             }
         }
+    }
+
+    // MARK: - Private: BPM Detection
+
+    /// Launches BPM detection for `buffer` on a utility-priority background thread.
+    /// On completion, dispatches `onBpmDetected` to the main queue.
+    private func triggerBpmDetection(buffer: AVAudioPCMBuffer) {
+        let workItem = DispatchWorkItem { [weak self] in
+            let result = BpmDetector.detect(buffer: buffer)
+            DispatchQueue.main.async { [weak self] in
+                self?.onBpmDetected?(result)
+            }
+        }
+        bpmWorkItem = workItem
+        DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 }
 #endif // os(iOS)
