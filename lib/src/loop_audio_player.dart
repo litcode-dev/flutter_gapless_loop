@@ -171,6 +171,22 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('setPan', {'pan': pan.clamp(-1.0, 1.0)});
   }
 
+  /// Sets the playback rate (speed) while preserving pitch.
+  ///
+  /// [rate] is a multiplier relative to the original tempo:
+  /// - `1.0` = normal speed (default)
+  /// - `2.0` = double speed
+  /// - `0.5` = half speed
+  ///
+  /// Values outside [0.25, 4.0] are clamped.
+  /// Takes effect immediately. Persists across loads.
+  ///
+  /// Throws [PlatformException] on native error.
+  Future<void> setPlaybackRate(double rate) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('setPlaybackRate', {'rate': rate.clamp(0.25, 4.0)});
+  }
+
   /// Seeks to [seconds] within the loaded file.
   ///
   /// Note: seeking during `.loops` mode causes a brief reschedule on the native
