@@ -46,6 +46,23 @@ import java.util.concurrent.atomic.AtomicReference
  */
 
 /**
+ * Equal-power pan formula.
+ *
+ * Maps [pan] ∈ [−1, 1] to (leftGain, rightGain) using:
+ *   angle = (pan + 1) × π/4
+ *   leftGain  = cos(angle)
+ *   rightGain = sin(angle)
+ *
+ * At centre (pan=0):  angle=π/4 → both gains ≈ 0.707 (−3 dB each).
+ * At full left (−1):  angle=0   → leftGain=1, rightGain=0.
+ * At full right (+1): angle=π/2 → leftGain=0, rightGain=1.
+ */
+internal fun panToGains(pan: Float): Pair<Float, Float> {
+    val angle = (pan + 1f) * (Math.PI.toFloat() / 4f)
+    return Pair(kotlin.math.cos(angle), kotlin.math.sin(angle))
+}
+
+/**
  * Core audio engine for sample-accurate gapless looping on Android.
  *
  * ## Playback Modes (auto-selected based on configuration)
@@ -389,6 +406,22 @@ class LoopAudioEngine(private val context: Context) {
     }
 
     /**
+     * Sets the stereo pan position. [pan] is in [−1.0, 1.0].
+     * Thread-safe via @Volatile + [AudioTrack.setStereoVolume].
+     */
+    @Volatile private var panValue: Float = 0f
+
+    fun setPan(pan: Float) {
+        panValue = pan.coerceIn(-1f, 1f)
+        applyPan()
+    }
+
+    private fun applyPan() {
+        val (leftGain, rightGain) = panToGains(panValue)
+        audioTrack?.setStereoVolume(leftGain, rightGain)
+    }
+
+    /**
      * Seeks to [seconds] in the file.
      *
      * Updates [currentFrameAtomic] atomically. The write thread reads this at the
@@ -481,6 +514,7 @@ class LoopAudioEngine(private val context: Context) {
             .build()
 
         Log.i(TAG, "AudioTrack built: ${sampleRate}Hz ${channelCount}ch buf=${bufBytes}B")
+        applyPan() // Restore pan setting after AudioTrack recreation
     }
 
     // ─── Private: write thread ────────────────────────────────────────────────

@@ -219,3 +219,32 @@ class BpmDetectorTest {
             "Confidence out of range: ${result.confidence}")
     }
 }
+
+class PanFormulaTest {
+
+    @Test
+    fun `centre pan gives equal left and right gains`() {
+        val (l, r) = panToGains(0f)
+        assertEquals(l, r, 0.001f)
+    }
+
+    @Test
+    fun `full left pan gives leftGain=1 rightGain=0`() {
+        val (l, r) = panToGains(-1f)
+        assertEquals(1.0f, l, 0.001f)
+        assertEquals(0.0f, r, 0.001f)
+    }
+
+    @Test
+    fun `full right pan gives leftGain=0 rightGain=1`() {
+        val (l, r) = panToGains(1f)
+        assertEquals(0.0f, l, 0.001f)
+        assertEquals(1.0f, r, 0.001f)
+    }
+
+    @Test
+    fun `centre gains satisfy equal-power property (sum of squares = 1)`() {
+        val (l, r) = panToGains(0f)
+        assertEquals(1.0f, l * l + r * r, 0.01f)
+    }
+}

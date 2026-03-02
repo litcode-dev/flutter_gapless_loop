@@ -175,6 +175,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            "setPan" -> {
+                val pan = call.argument<Double>("pan")?.toFloat() ?: 0f
+                eng.setPan(pan)
+                result.success(null)
+            }
+
             "seek" -> {
                 val position = call.argument<Double>("position") ?: 0.0
                 eng.seek(position)
