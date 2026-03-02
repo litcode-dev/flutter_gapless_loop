@@ -1,5 +1,5 @@
 name: flutter_gapless_loop
-description: "True sample-accurate gapless audio looping for iOS using AVAudioEngine. Zero-gap, zero-click loop playback for music production apps."
+description: "True sample-accurate gapless audio looping on iOS (AVAudioEngine) and Android (AudioTrack). Zero-gap, zero-click loop playback for music production apps."
 version: 0.0.1
 homepage: https://github.com/example/flutter_gapless_loop
 repository: https://github.com/example/flutter_gapless_loop
@@ -36,6 +36,9 @@ flutter:
   plugin:
     platforms:
       ios:
+        pluginClass: FlutterGaplessLoopPlugin
+      android:
+        package: com.fluttergaplessloop
         pluginClass: FlutterGaplessLoopPlugin
 
   # To add assets to your plugin package, add an assets section, like this:

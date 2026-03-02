@@ -1,25 +1,5 @@
-group = "com.example.flutter_gapless_loop"
+group = "com.fluttergaplessloop"
 version = "1.0-SNAPSHOT"
-
-buildscript {
-    val kotlinVersion = "2.2.20"
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.11.1")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
-    }
-}
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
 
 plugins {
     id("com.android.library")
@@ -27,8 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.flutter_gapless_loop"
-
+    namespace = "com.fluttergaplessloop"
     compileSdk = 36
 
     compileOptions {
@@ -58,9 +37,7 @@ android {
             isIncludeAndroidResources = true
             all {
                 it.useJUnitPlatform()
-
                 it.outputs.upToDateWhen { false }
-
                 it.testLogging {
                     events("passed", "skipped", "failed", "standardOut", "standardError")
                     showStandardStreams = true
@@ -71,6 +48,6 @@ android {
 }
 
 dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
-    testImplementation("org.mockito:mockito-core:5.0.0")
 }
