@@ -41,8 +41,11 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   double _crossfade = 0.0; // 0 to 0.5 seconds
   double _volume = 1.0;
 
+  BpmResult? _bpmResult;
+
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<String>? _errorSub;
+  StreamSubscription<BpmResult>? _bpmSub;
   Timer? _positionTimer;
 
   @override
@@ -50,12 +53,14 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     super.initState();
     _stateSub = _player.stateStream.listen(_onStateChange);
     _errorSub = _player.errorStream.listen(_onError);
+    _bpmSub   = _player.bpmStream.listen((r) => setState(() => _bpmResult = r));
   }
 
   @override
   void dispose() {
     _stateSub?.cancel();
     _errorSub?.cancel();
+    _bpmSub?.cancel();
     _positionTimer?.cancel();
     _player.dispose();
     super.dispose();
@@ -106,6 +111,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _loopStart = 0.0;
         _loopEnd = _duration;
         _position = 0.0;
+        _bpmResult = null; // cleared until bpmStream fires
       });
     } catch (e) {
       _onError(e.toString());
@@ -181,9 +187,12 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   String _fmt(double secs) => secs.toStringAsFixed(2);
 
+
+
   @override
   Widget build(BuildContext context) {
     final progress = _duration > 0 ? (_position / _duration).clamp(0.0, 1.0) : 0.0;
+
 
     return Scaffold(
       appBar: AppBar(
@@ -356,9 +365,61 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 ),
               ],
             ),
+
+            const Divider(),
+
+            // ── BPM Detection ──────────────────────────────────────
+            Text('BPM Detection', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            _BpmCard(result: _bpmResult, isReady: _isReady),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _BpmCard extends StatelessWidget {
+  const _BpmCard({required this.result, required this.isReady});
+
+  final BpmResult? result;
+  final bool isReady;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isReady) {
+      return const Text('Load a file to see BPM detection results.',
+          style: TextStyle(color: Colors.grey));
+    }
+    if (result == null) {
+      return const Row(
+        children: [
+          SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+          SizedBox(width: 8),
+          Text('Detecting BPM...'),
+        ],
+      );
+    }
+    final r = result!;
+    if (r.bpm == 0.0) {
+      return const Text('No BPM detected (audio too short or silent).',
+          style: TextStyle(color: Colors.grey));
+    }
+    final confidencePct = (r.confidence * 100).toStringAsFixed(0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${r.bpm.toStringAsFixed(1)} BPM',
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+        ),
+        const SizedBox(height: 4),
+        Text('Confidence: $confidencePct%  ·  ${r.beats.length} beats detected',
+            style: Theme.of(context).textTheme.bodySmall),
+      ],
     );
   }
 }
