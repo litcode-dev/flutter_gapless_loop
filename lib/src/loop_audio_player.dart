@@ -155,6 +155,19 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('setVolume', {'volume': volume});
   }
 
+  /// Sets the stereo pan position.
+  ///
+  /// [pan] must be in [-1.0, 1.0]:
+  /// - `-1.0` = full left
+  /// - `0.0`  = centre (default)
+  /// - `1.0`  = full right
+  ///
+  /// Takes effect immediately. Persists across loads.
+  Future<void> setPan(double pan) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('setPan', {'pan': pan.clamp(-1.0, 1.0)});
+  }
+
   /// Seeks to [seconds] within the loaded file.
   ///
   /// Note: seeking during `.loops` mode causes a brief reschedule on the native
