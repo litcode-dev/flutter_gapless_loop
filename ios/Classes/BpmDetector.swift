@@ -63,17 +63,16 @@ public enum BpmDetector {
 
         // Stage 2: BPM estimation via weighted autocorrelation
         let lagMin = max(1, Int((sampleRate / (maxBpm / 60.0)) / Double(hopSize)))
-        let lagMax = min(onset.count / 2, Int((sampleRate / (minBpm / 60.0)) / Double(hopSize)))
+        let lagMax = min(onset.count / 2, Int(ceil((sampleRate / (minBpm / 60.0)) / Double(hopSize))))
 
         guard lagMin < lagMax else {
             return BpmResult(bpm: 0, confidence: 0, beats: [])
         }
 
-        let (ac, bestLagIdx) = autocorrelate(onset: onset, lagMin: lagMin,
-                                             lagMax: lagMax, sampleRate: sampleRate)
+        let (ac, bestLagIdx, confidence) = autocorrelate(onset: onset, lagMin: lagMin,
+                                                          lagMax: lagMax, sampleRate: sampleRate)
         let actualLag    = bestLagIdx + lagMin
         let estimatedBpm = 60.0 * sampleRate / (Double(actualLag) * Double(hopSize))
-        let confidence   = min(1.0, Double(ac[bestLagIdx]))
 
         // Stage 3: DP beat sequence
         let period = Int((sampleRate / (estimatedBpm / 60.0) / Double(hopSize)).rounded())
@@ -115,10 +114,11 @@ public enum BpmDetector {
 
     private static func autocorrelate(
         onset: [Float], lagMin: Int, lagMax: Int, sampleRate: Double
-    ) -> ([Float], Int) {
+    ) -> ([Float], Int, Double) {  // returns (weightedNormalizedAc, bestLagIdx, confidence)
         let n     = onset.count
         let nLags = lagMax - lagMin + 1
         var ac    = [Float](repeating: 0, count: nLags)
+        var rawAc = [Double](repeating: 0, count: nLags)
 
         for i in 0 ..< nLags {
             let lag   = lagMin + i
@@ -127,6 +127,7 @@ public enum BpmDetector {
             var sum: Double = 0
             for t in 0 ..< count { sum += Double(onset[t]) * Double(onset[t + lag]) }
             let normalized = sum / Double(count)
+            rawAc[i] = normalized
             let bpm = 60.0 * sampleRate / (Double(lag) * Double(hopSize))
             let z   = (bpm - tempoPriorMean) / tempoPriorSigma
             ac[i]   = Float(normalized * exp(-0.5 * z * z))
@@ -135,7 +136,15 @@ public enum BpmDetector {
         let maxAc = ac.max() ?? 0
         if maxAc > 0 { for i in ac.indices { ac[i] /= maxAc } }
         let bestIdx = ac.indices.max(by: { ac[$0] < ac[$1] }) ?? 0
-        return (ac, bestIdx)
+
+        // Confidence: ratio of raw autocorrelation at best lag to zero-lag energy
+        // Zero-lag = sum(onset[t]^2) / n (energy of the signal)
+        var zeroLagSum: Double = 0
+        for t in 0 ..< n { zeroLagSum += Double(onset[t]) * Double(onset[t]) }
+        let ac0        = zeroLagSum / Double(n)
+        let confidence = ac0 > 0 ? min(1.0, rawAc[bestIdx] / ac0) : 0.0
+
+        return (ac, bestIdx, confidence)
     }
 
     private static func trackBeats(onset: [Float], period: Int, sampleRate: Double) -> [Double] {
