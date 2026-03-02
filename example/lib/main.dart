@@ -47,6 +47,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   final _bpmController = TextEditingController();
   final List<DateTime> _tapTimes = [];
   Timer? _bpmRepeatTimer;
+  bool _longPressActive = false;
 
   BpmResult? _bpmResult;
 
@@ -123,6 +124,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     try {
       await _player.loadFromFile(path);
       final dur = await _player.duration;
+      _tapTimes.clear();
       setState(() {
         _duration = dur.inMilliseconds / 1000.0;
         _loopStart = 0.0;
@@ -131,7 +133,6 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _bpmResult = null; // cleared until bpmStream fires
         _manualBpm = 0.0;
         _bpmController.text = '';
-        _tapTimes.clear();
       });
     } catch (e) {
       _onError(e.toString());
@@ -192,7 +193,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   void _adjustBpm(double delta) {
     setState(() {
-      _manualBpm = (_manualBpm + delta).clamp(20.0, 300.0);
+      _manualBpm = (_manualBpm + delta).clamp(20.0, 300.0).toDouble();
       _bpmController.text = _manualBpm.toStringAsFixed(1);
     });
   }
@@ -213,7 +214,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
       }
       final avg = intervals.reduce((a, b) => a + b) / intervals.length;
       setState(() {
-        _manualBpm = (60.0 / avg).clamp(20.0, 300.0);
+        _manualBpm = (60.0 / avg).clamp(20.0, 300.0).toDouble();
         _bpmController.text = _manualBpm.toStringAsFixed(1);
       });
     }
@@ -456,12 +457,15 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 // Decrement button with long-press repeat
                 GestureDetector(
                   onLongPressStart: (_) {
+                    _longPressActive = true;
                     _bpmRepeatTimer = Timer(const Duration(milliseconds: 400), () {
+                      if (!_longPressActive) return;
                       _bpmRepeatTimer = Timer.periodic(
                           const Duration(milliseconds: 100), (_) => _adjustBpm(-1.0));
                     });
                   },
                   onLongPressEnd: (_) {
+                    _longPressActive = false;
                     _bpmRepeatTimer?.cancel();
                     _bpmRepeatTimer = null;
                   },
@@ -485,9 +489,11 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                       final parsed = double.tryParse(v);
                       if (parsed != null) {
                         setState(() {
-                          _manualBpm = parsed.clamp(20.0, 300.0);
+                          _manualBpm = parsed.clamp(20.0, 300.0).toDouble();
                           _bpmController.text = _manualBpm.toStringAsFixed(1);
                         });
+                      } else {
+                        _bpmController.text = _manualBpm > 0 ? _manualBpm.toStringAsFixed(1) : '';
                       }
                     },
                   ),
@@ -495,12 +501,15 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 // Increment button with long-press repeat
                 GestureDetector(
                   onLongPressStart: (_) {
+                    _longPressActive = true;
                     _bpmRepeatTimer = Timer(const Duration(milliseconds: 400), () {
+                      if (!_longPressActive) return;
                       _bpmRepeatTimer = Timer.periodic(
                           const Duration(milliseconds: 100), (_) => _adjustBpm(1.0));
                     });
                   },
                   onLongPressEnd: (_) {
+                    _longPressActive = false;
                     _bpmRepeatTimer?.cancel();
                     _bpmRepeatTimer = null;
                   },
