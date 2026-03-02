@@ -181,6 +181,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            "setPlaybackRate" -> {
+                val rate = call.argument<Double>("rate")?.toFloat() ?: 1f
+                eng.setPlaybackRate(rate)
+                result.success(null)
+            }
+
             "seek" -> {
                 val position = call.argument<Double>("position") ?: 0.0
                 eng.seek(position)

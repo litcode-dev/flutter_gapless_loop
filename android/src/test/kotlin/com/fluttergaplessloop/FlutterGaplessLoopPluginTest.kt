@@ -220,6 +220,24 @@ class BpmDetectorTest {
     }
 }
 
+class PlaybackRateTest {
+
+    @Test
+    fun `rate coerces below minimum to 0_25`() {
+        assertEquals(0.25f, 0.1f.coerceIn(0.25f, 4.0f), 0.001f)
+    }
+
+    @Test
+    fun `rate coerces above maximum to 4_0`() {
+        assertEquals(4.0f, 10f.coerceIn(0.25f, 4.0f), 0.001f)
+    }
+
+    @Test
+    fun `normal rate 1_0 is within range`() {
+        assertEquals(1.0f, 1.0f.coerceIn(0.25f, 4.0f), 0.001f)
+    }
+}
+
 class PanFormulaTest {
 
     @Test

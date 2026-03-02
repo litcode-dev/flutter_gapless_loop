@@ -3,6 +3,8 @@ package com.fluttergaplessloop
 import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.PlaybackParams
+import android.os.Build
 import android.os.Process
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -282,6 +284,7 @@ class LoopAudioEngine(private val context: Context) {
         }
         currentFrameAtomic.set(loopStartFrame.toLong())
         audioTrack?.play()
+        applyPlaybackRate()
         startWriteThread()
         setState(EngineState.Playing)
     }
@@ -422,6 +425,26 @@ class LoopAudioEngine(private val context: Context) {
         audioTrack?.setStereoVolume(leftGain, rightGain)
     }
 
+    /** Backing field for [setPlaybackRate]. Written from main thread; read by [applyPlaybackRate]. */
+    @Volatile private var playbackRate: Float = 1f
+
+    /**
+     * Sets the playback rate (speed) while preserving pitch.
+     * [rate] is a multiplier: 1.0 = normal, 2.0 = double speed, 0.5 = half speed.
+     * Uses [AudioTrack.setPlaybackParams] on API 23+. No-op on older devices.
+     * Called on the main thread. Thread-safe via @Volatile.
+     */
+    fun setPlaybackRate(rate: Float) {
+        playbackRate = rate.coerceIn(0.25f, 4.0f)
+        applyPlaybackRate()
+    }
+
+    private fun applyPlaybackRate() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioTrack?.playbackParams = PlaybackParams().setSpeed(playbackRate)
+        }
+    }
+
     /**
      * Seeks to [seconds] in the file.
      *
@@ -516,6 +539,7 @@ class LoopAudioEngine(private val context: Context) {
 
         Log.i(TAG, "AudioTrack built: ${sampleRate}Hz ${channelCount}ch buf=${bufBytes}B")
         applyPan() // Restore pan setting after AudioTrack recreation
+        applyPlaybackRate() // Restore playback rate after AudioTrack recreation
     }
 
     // ─── Private: write thread ────────────────────────────────────────────────
