@@ -149,7 +149,7 @@ public enum BpmDetector {
 
     private static func trackBeats(onset: [Float], period: Int, sampleRate: Double) -> [Double] {
         let n = onset.count
-        guard period > 0, n >= period else { return [] }
+        guard period >= 2, n >= period else { return [] }
 
         var score = [Float](repeating: -.greatestFiniteMagnitude, count: n)
         var prev  = [Int](repeating: -1, count: n)
@@ -174,9 +174,10 @@ public enum BpmDetector {
         var beatFrames = [Int]()
         var t = best
         while t >= 0 && score[t] > -.greatestFiniteMagnitude {
-            beatFrames.insert(t, at: 0)
+            beatFrames.append(t)
             t = prev[t]
         }
+        beatFrames.reverse()
 
         let microFadeSeconds = 0.005
         return beatFrames
