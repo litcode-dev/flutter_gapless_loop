@@ -4,8 +4,6 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -82,51 +80,14 @@ void main() {
   });
 
   group('loadFromUrl', () {
-    test('calls loadFromFile with path ending in .wav for .wav URL', () async {
-      final client = MockClient((_) async =>
-          http.Response.bytes(stubBytes, 200));
+    test('invokes loadUrl with the URI string', () async {
       final player = LoopAudioPlayer();
-      await player.loadFromUrl(
-        Uri.parse('https://example.com/loop.wav'),
-        httpClient: client,
-      );
+      await player.loadFromUrl(Uri.parse('https://example.com/loop.wav'));
 
       expect(methodCalls, hasLength(1));
-      expect(methodCalls.first.method, equals('load'));
-      final path = methodCalls.first.arguments['path'] as String;
-      expect(path, endsWith('.wav'));
-    });
-
-    test('calls loadFromFile with path ending in .mp3 for .mp3 URL', () async {
-      final client = MockClient((_) async =>
-          http.Response.bytes(stubBytes, 200));
-      final player = LoopAudioPlayer();
-      await player.loadFromUrl(
-        Uri.parse('https://example.com/track.mp3'),
-        httpClient: client,
-      );
-
-      final path = methodCalls.first.arguments['path'] as String;
-      expect(path, endsWith('.mp3'));
-    });
-
-    test('throws Exception on non-2xx HTTP response', () async {
-      final client = MockClient((_) async => http.Response('Not Found', 404));
-      final player = LoopAudioPlayer();
-
-      await expectLater(
-        () => player.loadFromUrl(
-          Uri.parse('https://example.com/missing.wav'),
-          httpClient: client,
-        ),
-        throwsA(isA<Exception>().having(
-          (e) => e.toString(),
-          'message',
-          contains('404'),
-        )),
-      );
-      expect(methodCalls, isEmpty,
-          reason: 'loadFromFile must not be called on HTTP error');
+      expect(methodCalls.first.method, equals('loadUrl'));
+      expect(methodCalls.first.arguments['url'],
+          equals('https://example.com/loop.wav'));
     });
 
     test('throws StateError when called after dispose', () async {
