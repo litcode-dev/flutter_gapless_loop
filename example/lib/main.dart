@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
@@ -593,12 +595,203 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 ),
               ],
             ),
+
+            const Divider(),
+
+            // ── Metronome ──────────────────────────────────────────────
+            const _MetronomeCard(),
           ],
         ),
       ),
     );
   }
 }
+
+/// Generates a short sine-burst as a raw WAV [Uint8List].
+///
+/// [freq] — frequency in Hz (e.g. 880 for click, 1760 for accent).
+/// [durationMs] — length in milliseconds.
+/// [amplitude] — peak amplitude 0.0–1.0.
+Uint8List _generateSineWav({
+  required double freq,
+  required int durationMs,
+  double amplitude = 0.8,
+  int sampleRate = 44100,
+}) {
+  final numSamples = (sampleRate * durationMs / 1000).round();
+  final pcm = Int16List(numSamples);
+  for (var i = 0; i < numSamples; i++) {
+    final t = i / sampleRate;
+    // 5 ms fade-in, 20 ms fade-out to prevent clicks
+    double env = 1.0;
+    final fadeInFrames  = (sampleRate * 0.005).round();
+    final fadeOutFrames = (sampleRate * 0.020).round();
+    if (i < fadeInFrames) {
+      env = i / fadeInFrames;
+    } else if (i > numSamples - fadeOutFrames) {
+      env = (numSamples - i) / fadeOutFrames;
+    }
+    pcm[i] = (amplitude * env * 32767 * math.sin(2 * math.pi * freq * t))
+        .round()
+        .clamp(-32768, 32767);
+  }
+
+  final dataBytes  = pcm.buffer.asUint8List();
+  final totalBytes = 44 + dataBytes.length;
+  final header     = ByteData(44)
+    ..setUint32(0,  0x52494646, Endian.big)          // "RIFF"
+    ..setUint32(4,  totalBytes - 8, Endian.little)
+    ..setUint32(8,  0x57415645, Endian.big)          // "WAVE"
+    ..setUint32(12, 0x666d7420, Endian.big)          // "fmt "
+    ..setUint32(16, 16, Endian.little)               // chunk size
+    ..setUint16(20, 1, Endian.little)                // PCM
+    ..setUint16(22, 1, Endian.little)                // mono
+    ..setUint32(24, sampleRate, Endian.little)
+    ..setUint32(28, sampleRate * 2, Endian.little)   // byte rate
+    ..setUint16(32, 2, Endian.little)                // block align
+    ..setUint16(34, 16, Endian.little)               // bits per sample
+    ..setUint32(36, 0x64617461, Endian.big)          // "data"
+    ..setUint32(40, dataBytes.length, Endian.little);
+
+  return Uint8List.fromList([...header.buffer.asUint8List(), ...dataBytes]);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Metronome Card
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _MetronomeCard extends StatefulWidget {
+  const _MetronomeCard();
+
+  @override
+  State<_MetronomeCard> createState() => _MetronomeCardState();
+}
+
+class _MetronomeCardState extends State<_MetronomeCard> {
+  final _metronome = MetronomePlayer();
+
+  bool   _running     = false;
+  double _bpm         = 100.0;
+  int    _beatsPerBar = 4;
+  int    _currentBeat = -1;
+
+  StreamSubscription<int>? _beatSub;
+
+  // Pre-generate click and accent WAV bytes once (static, reused across rebuilds).
+  static final _clickBytes  = _generateSineWav(freq: 880,  durationMs: 40);
+  static final _accentBytes = _generateSineWav(freq: 1760, durationMs: 50, amplitude: 1.0);
+
+  @override
+  void dispose() {
+    _beatSub?.cancel();
+    _metronome.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleMetronome() async {
+    if (_running) {
+      await _metronome.stop();
+      _beatSub?.cancel();
+      setState(() { _running = false; _currentBeat = -1; });
+    } else {
+      await _metronome.start(
+        bpm: _bpm,
+        beatsPerBar: _beatsPerBar,
+        click: _clickBytes,
+        accent: _accentBytes,
+      );
+      _beatSub = _metronome.beatStream.listen((beat) {
+        if (mounted) setState(() => _currentBeat = beat);
+      });
+      setState(() => _running = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Metronome', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 12),
+
+        // ── Beat indicator dots ────────────────────────────────
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(_beatsPerBar, (i) {
+            final isActive = _running && i == _currentBeat;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 80),
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              width: 28, height: 28,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isActive
+                    ? (i == 0 ? Colors.orange : Colors.blue)
+                    : Colors.grey.shade300,
+              ),
+            );
+          }),
+        ),
+        const SizedBox(height: 16),
+
+        // ── BPM slider ─────────────────────────────────────────
+        Row(
+          children: [
+            const SizedBox(width: 50, child: Text('BPM')),
+            Expanded(
+              child: Slider(
+                value: _bpm,
+                min: 40, max: 240,
+                divisions: 200,
+                label: _bpm.round().toString(),
+                onChanged: (v) async {
+                  setState(() => _bpm = v);
+                  if (_running) await _metronome.setBpm(v);
+                },
+              ),
+            ),
+            SizedBox(width: 36, child: Text(_bpm.round().toString())),
+          ],
+        ),
+
+        // ── Time signature ─────────────────────────────────────
+        Row(
+          children: [
+            const SizedBox(width: 50, child: Text('Time')),
+            DropdownButton<int>(
+              value: _beatsPerBar,
+              items: [2, 3, 4, 5, 6, 7]
+                  .map((n) => DropdownMenuItem(value: n, child: Text('$n/4')))
+                  .toList(),
+              onChanged: (v) async {
+                if (v == null) return;
+                setState(() { _beatsPerBar = v; _currentBeat = -1; });
+                if (_running) await _metronome.setBeatsPerBar(v);
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // ── Start / Stop button ────────────────────────────────
+        Center(
+          child: ElevatedButton.icon(
+            onPressed: _toggleMetronome,
+            icon: Icon(_running ? Icons.stop : Icons.play_arrow),
+            label: Text(_running ? 'Stop' : 'Start'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _running ? Colors.red : Colors.green,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 class _BpmCard extends StatelessWidget {
   const _BpmCard({required this.result, required this.isReady});
