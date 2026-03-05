@@ -33,18 +33,28 @@ import kotlinx.coroutines.launch
 class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler {
 
     companion object {
-        private const val TAG            = "FlutterGaplessLoopPlugin"
-        private const val METHOD_CHANNEL = "flutter_gapless_loop"
-        private const val EVENT_CHANNEL  = "flutter_gapless_loop/events"
+        private const val TAG                   = "FlutterGaplessLoopPlugin"
+        private const val METHOD_CHANNEL        = "flutter_gapless_loop"
+        private const val EVENT_CHANNEL         = "flutter_gapless_loop/events"
+        private const val METRO_METHOD_CHANNEL  = "flutter_gapless_loop/metronome"
+        private const val METRO_EVENT_CHANNEL   = "flutter_gapless_loop/metronome/events"
     }
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
 
+    // Metronome channels
+    private lateinit var metronomeMethodChannel: MethodChannel
+    private lateinit var metronomeEventChannel: EventChannel
+
     /** EventSink for pushing state/error/route events to Dart. Null when not subscribed. */
     private var eventSink: EventChannel.EventSink? = null
 
+    /** EventSink for pushing beat-tick events to Dart. Null when not subscribed. */
+    private var metronomeEventSink: EventChannel.EventSink? = null
+
     private var engine: LoopAudioEngine? = null
+    private var metronomeEngine: MetronomeEngine? = null
     private var pluginBinding: FlutterPlugin.FlutterPluginBinding? = null
 
     /** Coroutine scope for async operations (file loading). Main dispatcher = Flutter-safe. */
@@ -64,14 +74,32 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         eventChannel = EventChannel(binding.binaryMessenger, EVENT_CHANNEL)
         eventChannel.setStreamHandler(this)
 
+        // Metronome channels — separate handler avoids method-name collisions with loop player
+        metronomeMethodChannel = MethodChannel(binding.binaryMessenger, METRO_METHOD_CHANNEL)
+        metronomeMethodChannel.setMethodCallHandler { call, result -> handleMetronomeCall(call, result) }
+
+        metronomeEventChannel = EventChannel(binding.binaryMessenger, METRO_EVENT_CHANNEL)
+        metronomeEventChannel.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                metronomeEventSink = events
+            }
+            override fun onCancel(arguments: Any?) {
+                metronomeEventSink = null
+            }
+        })
+
         Log.i(TAG, "Attached to engine")
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
+        metronomeMethodChannel.setMethodCallHandler(null)
+        metronomeEventChannel.setStreamHandler(null)
         engine?.dispose()
         engine = null
+        metronomeEngine?.dispose()
+        metronomeEngine = null
         pluginBinding = null
         Log.i(TAG, "Detached from engine")
     }
@@ -264,5 +292,72 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
      */
     private fun sendEvent(event: Map<String, Any>) {
         mainHandler.post { eventSink?.success(event) }
+    }
+
+    // ─── Metronome ────────────────────────────────────────────────────────────
+
+    private fun handleMetronomeCall(call: MethodCall, result: Result) {
+        when (call.method) {
+
+            "start" -> {
+                val bpm         = call.argument<Double>("bpm")
+                    ?: return result.error("INVALID_ARGS", "'bpm' required", null)
+                val beatsPerBar = call.argument<Int>("beatsPerBar")
+                    ?: return result.error("INVALID_ARGS", "'beatsPerBar' required", null)
+                val clickBytes  = call.argument<ByteArray>("click")
+                    ?: return result.error("INVALID_ARGS", "'click' required", null)
+                val accentBytes = call.argument<ByteArray>("accent")
+                    ?: return result.error("INVALID_ARGS", "'accent' required", null)
+                val ext         = call.argument<String>("extension") ?: "wav"
+
+                getOrCreateMetronomeEngine().start(bpm, beatsPerBar, clickBytes, accentBytes, ext)
+                result.success(null)
+            }
+
+            "setBpm" -> {
+                val bpm = call.argument<Double>("bpm")
+                    ?: return result.error("INVALID_ARGS", "'bpm' required", null)
+                metronomeEngine?.setBpm(bpm)
+                result.success(null)
+            }
+
+            "setBeatsPerBar" -> {
+                val beatsPerBar = call.argument<Int>("beatsPerBar")
+                    ?: return result.error("INVALID_ARGS", "'beatsPerBar' required", null)
+                metronomeEngine?.setBeatsPerBar(beatsPerBar)
+                result.success(null)
+            }
+
+            "stop" -> {
+                metronomeEngine?.stop()
+                result.success(null)
+            }
+
+            "dispose" -> {
+                metronomeEngine?.dispose()
+                metronomeEngine = null
+                result.success(null)
+            }
+
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun getOrCreateMetronomeEngine(): MetronomeEngine {
+        metronomeEngine?.let { return it }
+        val eng = MetronomeEngine(
+            onBeatTick = { beat ->
+                mainHandler.post {
+                    metronomeEventSink?.success(mapOf("type" to "beatTick", "beat" to beat))
+                }
+            },
+            onError = { msg ->
+                mainHandler.post {
+                    metronomeEventSink?.success(mapOf("type" to "error", "message" to msg))
+                }
+            }
+        )
+        metronomeEngine = eng
+        return eng
     }
 }
