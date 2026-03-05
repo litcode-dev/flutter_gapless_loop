@@ -117,6 +117,39 @@ class LoopAudioPlayer {
     await _loadFromBytesWithExtension(bytes, extension);
   }
 
+  /// Loads audio from an HTTP or HTTPS URL.
+  ///
+  /// The file is downloaded in full before playback begins, preserving
+  /// sample-accurate gapless looping. The temporary file is deleted after load.
+  ///
+  /// The file extension is inferred from the URL path (e.g. `.wav`, `.mp3`).
+  /// Falls back to `'wav'` if the URL has no recognisable extension.
+  ///
+  /// Throws [Exception] if the HTTP response status is not 2xx.
+  /// Throws [PlatformException] on native decode or engine error.
+  ///
+  /// [httpClient] is optional and intended for testing. When omitted a default
+  /// [http.Client] is created and closed after the request completes.
+  Future<void> loadFromUrl(Uri uri, {http.Client? httpClient}) async {
+    _checkNotDisposed();
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client.get(uri);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception('HTTP ${response.statusCode}: $uri');
+      }
+      final segments = uri.pathSegments;
+      final lastSegment = segments.isNotEmpty ? segments.last : '';
+      final dotIndex = lastSegment.lastIndexOf('.');
+      final ext = (dotIndex >= 0 && dotIndex < lastSegment.length - 1)
+          ? lastSegment.substring(dotIndex + 1)
+          : 'wav';
+      await _loadFromBytesWithExtension(response.bodyBytes, ext);
+    } finally {
+      if (httpClient == null) client.close();
+    }
+  }
+
   /// Writes [bytes] to a temp file with the given [extension], calls
   /// [loadFromFile], then deletes the temp file unconditionally.
   Future<void> _loadFromBytesWithExtension(
