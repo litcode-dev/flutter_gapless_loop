@@ -1,5 +1,10 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+
 import 'loop_audio_state.dart';
 
 /// A player for sample-accurate gapless audio looping on iOS.
@@ -97,6 +102,34 @@ class LoopAudioPlayer {
   Future<void> loadFromFile(String filePath) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>('load', {'path': filePath});
+  }
+
+  /// Loads audio from raw bytes already in memory (e.g. from `dart:io`, a
+  /// network response body, or generated audio data).
+  ///
+  /// The bytes are written to a temporary file with the given [extension] hint
+  /// (default `'wav'`), loaded via the native engine, then the temporary file
+  /// is deleted.
+  ///
+  /// Throws [PlatformException] on native decode or engine error.
+  Future<void> loadFromBytes(Uint8List bytes, {String extension = 'wav'}) async {
+    _checkNotDisposed();
+    await _loadFromBytesWithExtension(bytes, extension);
+  }
+
+  /// Writes [bytes] to a temp file with the given [extension], calls
+  /// [loadFromFile], then deletes the temp file unconditionally.
+  Future<void> _loadFromBytesWithExtension(
+      Uint8List bytes, String extension) async {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final tmp = File(
+        '${Directory.systemTemp.path}/flutter_gapless_$timestamp.$extension');
+    try {
+      await tmp.writeAsBytes(bytes, flush: true);
+      await loadFromFile(tmp.path);
+    } finally {
+      if (await tmp.exists()) await tmp.delete();
+    }
   }
 
   /// Starts looping playback from the beginning (or current loop region start).
