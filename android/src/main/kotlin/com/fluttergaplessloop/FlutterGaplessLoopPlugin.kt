@@ -184,13 +184,22 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             "loadUrl" -> {
                 val urlString = call.argument<String>("url")
                     ?: return result.error("INVALID_ARGS", "'url' is required", null)
-                val scheme = try { java.net.URI(urlString).scheme?.lowercase() } catch (_: Exception) { null }
+                val uri = try { java.net.URI(urlString) } catch (_: Exception) { null }
+                val scheme = uri?.scheme?.lowercase()
                 if (scheme != "http" && scheme != "https") {
                     return result.error("INVALID_ARGS", "URL must use http or https scheme: $urlString", null)
                 }
+                val cacheDir = pluginBinding?.applicationContext?.cacheDir
+                    ?: return result.error("NOT_ATTACHED", "Plugin not attached", null)
                 pluginScope.launch {
-                    val tempFile = try {
-                        withContext(Dispatchers.IO) {
+                    var tempFile: java.io.File? = null
+                    try {
+                        tempFile = withContext(Dispatchers.IO) {
+                            val ext = uri!!.path.substringAfterLast('.', "wav").take(10).ifEmpty { "wav" }
+                            val tmp = java.io.File(
+                                cacheDir,
+                                "flutter_gapless_${java.util.UUID.randomUUID()}.$ext"
+                            )
                             val conn = java.net.URL(urlString).openConnection() as java.net.HttpURLConnection
                             try {
                                 conn.connectTimeout = 15_000
@@ -200,12 +209,6 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                                 if (status !in 200..299) {
                                     throw LoopAudioException(LoopEngineError.DecodeFailed("HTTP $status: $urlString"))
                                 }
-                                val ext = urlString.substringAfterLast('.', "wav")
-                                    .substringBefore('?').take(10).ifEmpty { "wav" }
-                                val tmp = java.io.File(
-                                    pluginBinding?.applicationContext?.cacheDir,
-                                    "flutter_gapless_${java.util.UUID.randomUUID()}.$ext"
-                                )
                                 conn.inputStream.use { input ->
                                     tmp.outputStream().use { output -> input.copyTo(output) }
                                 }
@@ -214,24 +217,16 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                                 conn.disconnect()
                             }
                         }
-                    } catch (e: LoopAudioException) {
-                        Log.e(TAG, "loadUrl download failed: ${e.message}")
-                        return@launch result.error("DOWNLOAD_FAILED", e.message, null)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "loadUrl download failed: ${e.message}")
-                        return@launch result.error("DOWNLOAD_FAILED", e.message, null)
-                    }
-                    try {
                         eng.loadFile(tempFile.absolutePath)
                         result.success(null)
                     } catch (e: LoopAudioException) {
-                        Log.e(TAG, "loadUrl loadFile failed: ${e.message}")
+                        Log.e(TAG, "loadUrl failed: ${e.message}")
                         result.error("LOAD_FAILED", e.message, null)
                     } catch (e: Exception) {
-                        Log.e(TAG, "loadUrl loadFile failed: ${e.message}")
+                        Log.e(TAG, "loadUrl failed: ${e.message}")
                         result.error("LOAD_FAILED", e.message, null)
                     } finally {
-                        tempFile.delete()
+                        tempFile?.delete()
                     }
                 }
             }
