@@ -4,6 +4,45 @@ import UIKit
 import AVFoundation
 import os.log
 
+// MARK: - MetronomeStreamHandler
+
+/// Dedicated FlutterStreamHandler for the metronome event channel.
+/// Kept separate from the loop-player handler to isolate lifecycle.
+@available(iOS 14.0, *)
+private final class MetronomeStreamHandler: NSObject, FlutterStreamHandler {
+    var eventSink: FlutterEventSink?
+
+    func onListen(withArguments arguments: Any?,
+                  eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        eventSink = events
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        eventSink = nil
+        return nil
+    }
+}
+
+// MARK: - MetronomeMethodHandler
+
+/// Routes method calls on "flutter_gapless_loop/metronome" to the plugin.
+///
+/// Using a separate delegate object prevents name collisions between
+/// the metronome's "stop"/"dispose" and the loop player's identically-named methods.
+@available(iOS 14.0, *)
+private final class MetronomeMethodHandler: NSObject, FlutterPlugin {
+    static func register(with registrar: FlutterPluginRegistrar) {}
+
+    weak var plugin: FlutterGaplessLoopPlugin?
+
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        plugin?.handleMetronomeCall(call, result: result)
+    }
+}
+
+// MARK: - FlutterGaplessLoopPlugin
+
 /// The Flutter plugin entry point for flutter_gapless_loop.
 ///
 /// Registers the method channel and event channel, instantiates [LoopAudioEngine],
@@ -16,6 +55,11 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     private var eventSink: FlutterEventSink?
     private var registrar: FlutterPluginRegistrar?
     private let logger = Logger(subsystem: "com.fluttergaplessloop", category: "Plugin")
+
+    // Metronome
+    private var metronomeEngine: MetronomeEngine?
+    private let metronomeStreamHandler = MetronomeStreamHandler()
+    private let metronomeMethodHandler = MetronomeMethodHandler()
 
     // MARK: - FlutterPlugin Registration
 
@@ -34,9 +78,23 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         instance.registrar = registrar
         registrar.addMethodCallDelegate(instance, channel: methodChannel)
         eventChannel.setStreamHandler(instance)
+
+        // Metronome channels — separate handler to avoid method-name collisions
+        let metronomeMethodChannel = FlutterMethodChannel(
+            name: "flutter_gapless_loop/metronome",
+            binaryMessenger: registrar.messenger()
+        )
+        let metronomeEventChannel = FlutterEventChannel(
+            name: "flutter_gapless_loop/metronome/events",
+            binaryMessenger: registrar.messenger()
+        )
+        instance.metronomeMethodHandler.plugin = instance
+        registrar.addMethodCallDelegate(instance.metronomeMethodHandler,
+                                        channel: metronomeMethodChannel)
+        metronomeEventChannel.setStreamHandler(instance.metronomeStreamHandler)
     }
 
-    // MARK: - FlutterStreamHandler
+    // MARK: - FlutterStreamHandler (loop player)
 
     /// Called when the Dart event channel subscribes. Creates the engine.
     public func onListen(
@@ -100,7 +158,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         logger.info("LoopAudioEngine created")
     }
 
-    // MARK: - FlutterPlugin Method Channel
+    // MARK: - FlutterPlugin Method Channel (loop player)
 
     /// Routes all Flutter method channel calls to [LoopAudioEngine].
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -280,6 +338,78 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         default:
             DispatchQueue.main.async { result(FlutterMethodNotImplemented) }
         }
+    }
+
+    // MARK: - Metronome Method Handler
+
+    /// Routes calls from the `"flutter_gapless_loop/metronome"` channel.
+    func handleMetronomeCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any]
+
+        switch call.method {
+
+        case "start":
+            guard let bpmVal      = args?["bpm"]          as? Double,
+                  let beatsVal    = args?["beatsPerBar"]   as? Int,
+                  let clickData   = args?["click"]         as? FlutterStandardTypedData,
+                  let accentData  = args?["accent"]        as? FlutterStandardTypedData else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "start requires bpm, beatsPerBar, click, accent",
+                                    details: nil))
+                return
+            }
+            let ext = args?["extension"] as? String ?? "wav"
+            getOrCreateMetronomeEngine().start(
+                bpm: bpmVal,
+                beatsPerBar: beatsVal,
+                clickData: clickData.data,
+                accentData: accentData.data,
+                fileExtension: ext
+            )
+            result(nil)
+
+        case "setBpm":
+            guard let bpmVal = args?["bpm"] as? Double else {
+                result(FlutterError(code: "INVALID_ARGS", message: "'bpm' required", details: nil))
+                return
+            }
+            metronomeEngine?.setBpm(bpmVal)
+            result(nil)
+
+        case "setBeatsPerBar":
+            guard let beatsVal = args?["beatsPerBar"] as? Int else {
+                result(FlutterError(code: "INVALID_ARGS", message: "'beatsPerBar' required", details: nil))
+                return
+            }
+            metronomeEngine?.setBeatsPerBar(beatsVal)
+            result(nil)
+
+        case "stop":
+            metronomeEngine?.stop()
+            result(nil)
+
+        case "dispose":
+            metronomeEngine?.dispose()
+            metronomeEngine = nil
+            result(nil)
+
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
+
+    @discardableResult
+    private func getOrCreateMetronomeEngine() -> MetronomeEngine {
+        if let eng = metronomeEngine { return eng }
+        let eng = MetronomeEngine()
+        eng.onBeatTick = { [weak self] beat in
+            self?.metronomeStreamHandler.eventSink?(["type": "beatTick", "beat": beat])
+        }
+        eng.onError = { [weak self] msg in
+            self?.metronomeStreamHandler.eventSink?(["type": "error", "message": msg])
+        }
+        metronomeEngine = eng
+        return eng
     }
 }
 #endif // os(iOS)
