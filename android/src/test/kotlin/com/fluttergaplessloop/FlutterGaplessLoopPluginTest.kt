@@ -340,3 +340,91 @@ class MeterDetectorTest {
         }
     }
 }
+
+class MetronomeEngineTest {
+
+    @Test
+    fun `buildBarBuffer returns correct total sample count`() {
+        val sampleRate   = 44100
+        val bpm          = 120.0
+        val beatsPerBar  = 4
+        val channelCount = 1
+        val beatFrames   = (sampleRate * 60.0 / bpm).toInt()         // 22050
+        val expectedLen  = beatFrames * beatsPerBar * channelCount    // 88200
+
+        val click  = FloatArray(1000) { 0.5f }
+        val accent = FloatArray(1000) { 1.0f }
+
+        val bar = MetronomeEngine.buildBarBuffer(
+            accentPcm = accent, accentFrames = 1000,
+            clickPcm  = click,  clickFrames  = 1000,
+            sampleRate = sampleRate, channelCount = channelCount,
+            bpm = bpm, beatsPerBar = beatsPerBar
+        )
+
+        assertEquals(expectedLen, bar.size)
+    }
+
+    @Test
+    fun `buildBarBuffer places accent at frame 0`() {
+        val click  = FloatArray(100) { 0.3f }
+        val accent = FloatArray(100) { 0.9f }
+
+        val bar = MetronomeEngine.buildBarBuffer(
+            accentPcm = accent, accentFrames = 100,
+            clickPcm  = click,  clickFrames  = 100,
+            sampleRate = 44100, channelCount = 1,
+            bpm = 120.0, beatsPerBar = 4
+        )
+
+        // First samples must be non-zero (accent placed at frame 0, after micro-fade ramp)
+        // Micro-fade only zeros the very first sample, so check middle of accent region
+        assertTrue(bar.slice(5 until 95).any { it != 0f },
+            "Expected non-zero accent samples near frame 0")
+    }
+
+    @Test
+    fun `buildBarBuffer places click at beat 1 position`() {
+        val sampleRate = 44100
+        val bpm        = 120.0
+        val beatFrames = (sampleRate * 60.0 / bpm).toInt()  // 22050
+
+        val click  = FloatArray(100) { 0.5f }
+        val accent = FloatArray(100) { 1.0f }
+
+        val bar = MetronomeEngine.buildBarBuffer(
+            accentPcm = accent, accentFrames = 100,
+            clickPcm  = click,  clickFrames  = 100,
+            sampleRate = sampleRate, channelCount = 1,
+            bpm = bpm, beatsPerBar = 4
+        )
+
+        // Click at beat 1: samples beatFrames..beatFrames+99 must be non-zero
+        // (again, micro-fade only affects the very first and last few frames of the bar)
+        val clickStart = beatFrames
+        assertTrue(bar.slice(clickStart + 5 until clickStart + 95).any { it != 0f },
+            "Expected non-zero click samples at beat 1 (frame $clickStart)")
+    }
+
+    @Test
+    fun `buildBarBuffer silence between accent tail and beat 1`() {
+        val sampleRate = 44100
+        val bpm        = 120.0
+        val beatFrames = (sampleRate * 60.0 / bpm).toInt()
+
+        val click  = FloatArray(50) { 0.5f }
+        val accent = FloatArray(50) { 1.0f }
+
+        val bar = MetronomeEngine.buildBarBuffer(
+            accentPcm = accent, accentFrames = 50,
+            clickPcm  = click,  clickFrames  = 50,
+            sampleRate = sampleRate, channelCount = 1,
+            bpm = bpm, beatsPerBar = 4
+        )
+
+        // Region between accent tail (frame 50) and click start (beatFrames) must be silent
+        for (i in 50 until beatFrames) {
+            assertEquals(0f, bar[i], "Expected silence at frame $i")
+        }
+    }
+}
