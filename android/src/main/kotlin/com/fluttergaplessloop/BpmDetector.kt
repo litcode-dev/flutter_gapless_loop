@@ -22,7 +22,9 @@ import kotlin.math.sqrt
 data class BpmDetectionResult(
     val bpm: Double,          // 0.0 if detection failed/skipped
     val confidence: Double,   // [0.0, 1.0]
-    val beats: List<Double>   // timestamps in seconds
+    val beats: List<Double>,  // beat timestamps in seconds
+    val beatsPerBar: Int = 0,            // 0 = unknown (low confidence or too short)
+    val bars: List<Double> = emptyList() // bar start timestamps in seconds
 )
 
 internal object BpmDetector {
