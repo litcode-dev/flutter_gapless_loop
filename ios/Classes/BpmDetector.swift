@@ -12,6 +12,11 @@ public struct BpmResult {
     public let confidence: Double
     /// Beat timestamps in seconds from the start of the file.
     public let beats: [Double]
+    /// Estimated beats per bar (time signature numerator). `0` if unknown (low confidence or
+    /// audio too short). Typical values: 2, 3, 4, 6, 7.
+    public let beatsPerBar: Int
+    /// Bar start timestamps in seconds. Empty if `beatsPerBar` is 0.
+    public let bars: [Double]
 }
 
 // MARK: - BpmDetector
@@ -48,7 +53,7 @@ public enum BpmDetector {
 
         guard duration >= minDurationSeconds,
               let channelData = buffer.floatChannelData else {
-            return BpmResult(bpm: 0, confidence: 0, beats: [])
+            return BpmResult(bpm: 0, confidence: 0, beats: [], beatsPerBar: 0, bars: [])
         }
 
         // Stage 1: Onset strength envelope
@@ -57,7 +62,7 @@ public enum BpmDetector {
         var onset = computeOnsetStrength(mono: mono, frameCount: totalFrames)
 
         guard let maxOnset = onset.max(), maxOnset > 0 else {
-            return BpmResult(bpm: 0, confidence: 0, beats: [])
+            return BpmResult(bpm: 0, confidence: 0, beats: [], beatsPerBar: 0, bars: [])
         }
         for i in onset.indices { onset[i] /= maxOnset }
 
@@ -66,7 +71,7 @@ public enum BpmDetector {
         let lagMax = min(onset.count / 2, Int(ceil((sampleRate / (minBpm / 60.0)) / Double(hopSize))))
 
         guard lagMin < lagMax else {
-            return BpmResult(bpm: 0, confidence: 0, beats: [])
+            return BpmResult(bpm: 0, confidence: 0, beats: [], beatsPerBar: 0, bars: [])
         }
 
         let (ac, bestLagIdx, confidence) = autocorrelate(onset: onset, lagMin: lagMin,
@@ -78,7 +83,12 @@ public enum BpmDetector {
         let period = Int((sampleRate / (estimatedBpm / 60.0) / Double(hopSize)).rounded())
         let beats  = trackBeats(onset: onset, period: period, sampleRate: sampleRate)
 
-        return BpmResult(bpm: estimatedBpm, confidence: confidence, beats: beats)
+        let (beatsPerBar, bars): (Int, [Double]) = confidence >= 0.3
+            ? detectMeter(onset: onset, beatPeriod: period, beats: beats, sampleRate: sampleRate)
+            : (0, [])
+
+        return BpmResult(bpm: estimatedBpm, confidence: confidence, beats: beats,
+                         beatsPerBar: beatsPerBar, bars: bars)
     }
 
     // MARK: - Private Helpers
@@ -183,6 +193,59 @@ public enum BpmDetector {
         return beatFrames
             .map { Double($0) * Double(hopSize) / sampleRate }
             .filter { $0 >= microFadeSeconds }
+    }
+
+    /// Infers the meter (beats per bar) from the onset envelope using bar-level autocorrelation.
+    ///
+    /// Evaluates onset autocorrelation at lags of 2, 3, 4, 6, and 7 beat periods, weighted
+    /// by a Gaussian prior favouring m=4 (σ=1.5). Bar timestamps are derived by stepping
+    /// through `beats` at `beatsPerBar` intervals from the strongest-onset downbeat.
+    ///
+    /// - Returns: `(0, [])` if the audio is too short or meter is ambiguous.
+    private static func detectMeter(
+        onset: [Float], beatPeriod: Int, beats: [Double], sampleRate: Double
+    ) -> (Int, [Double]) {
+        let candidates  = [2, 3, 4, 6, 7]
+        let priorMean   = 4.0
+        let priorSigma  = 1.5
+        let n           = onset.count
+
+        var bestMeter = 0
+        var bestScore = -Double.greatestFiniteMagnitude
+
+        for m in candidates {
+            let lag = m * beatPeriod
+            guard lag < n else { continue }
+            let count = n - lag
+            var sum: Double = 0
+            for t in 0 ..< count { sum += Double(onset[t]) * Double(onset[t + lag]) }
+            let ac = sum / Double(count)
+            let z  = (Double(m) - priorMean) / priorSigma
+            let weighted = ac * exp(-0.5 * z * z)
+            if weighted > bestScore { bestScore = weighted; bestMeter = m }
+        }
+
+        guard bestMeter > 0, beats.count >= bestMeter else { return (0, []) }
+
+        // Find the beat with the strongest onset → use as downbeat anchor
+        var strongestIdx = 0
+        var strongestStrength: Float = 0
+        for (i, ts) in beats.enumerated() {
+            let frame = min(Int((ts * sampleRate / Double(hopSize)).rounded()), n - 1)
+            if onset[frame] > strongestStrength {
+                strongestStrength = onset[frame]
+                strongestIdx = i
+            }
+        }
+
+        // Step forward and backward by bestMeter to collect bar start indices
+        var barIndices = [Int]()
+        var idx = strongestIdx
+        while idx < beats.count { barIndices.append(idx); idx += bestMeter }
+        idx = strongestIdx - bestMeter
+        while idx >= 0 { barIndices.insert(idx, at: 0); idx -= bestMeter }
+
+        return (bestMeter, barIndices.map { beats[$0] })
     }
 }
 #endif // os(iOS)
