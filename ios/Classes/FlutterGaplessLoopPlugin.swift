@@ -333,6 +333,63 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             engine = nil
             DispatchQueue.main.async { result(nil) }
 
+        // MARK: Load from remote URL
+        case "loadUrl":
+            guard let urlString = args?["url"] as? String,
+                  let remoteURL = URL(string: urlString) else {
+                DispatchQueue.main.async { result(FlutterError(
+                    code: "INVALID_ARGS",
+                    message: "'url' is required and must be a valid URL",
+                    details: nil
+                )) }
+                return
+            }
+            let task = URLSession.shared.dataTask(with: remoteURL) { [weak self] data, response, error in
+                guard let self else { return }
+                if let error = error {
+                    DispatchQueue.main.async { result(FlutterError(
+                        code: "DOWNLOAD_FAILED",
+                        message: error.localizedDescription,
+                        details: nil
+                    )) }
+                    return
+                }
+                if let httpResponse = response as? HTTPURLResponse,
+                   !(200..<300).contains(httpResponse.statusCode) {
+                    DispatchQueue.main.async { result(FlutterError(
+                        code: "DOWNLOAD_FAILED",
+                        message: "HTTP \(httpResponse.statusCode): \(urlString)",
+                        details: nil
+                    )) }
+                    return
+                }
+                guard let data = data else {
+                    DispatchQueue.main.async { result(FlutterError(
+                        code: "DOWNLOAD_FAILED",
+                        message: "No data received",
+                        details: nil
+                    )) }
+                    return
+                }
+                let ext = remoteURL.pathExtension.isEmpty ? "wav" : remoteURL.pathExtension
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("flutter_gapless_\(Date().timeIntervalSince1970).\(ext)")
+                do {
+                    try data.write(to: tmp)
+                    defer { try? FileManager.default.removeItem(at: tmp) }
+                    try eng.loadFile(url: tmp)
+                    DispatchQueue.main.async { result(nil) }
+                } catch {
+                    self.logger.error("loadUrl failed: \(error.localizedDescription)")
+                    DispatchQueue.main.async { result(FlutterError(
+                        code: "LOAD_FAILED",
+                        message: error.localizedDescription,
+                        details: nil
+                    )) }
+                }
+            }
+            task.resume()
+
         default:
             DispatchQueue.main.async { result(FlutterMethodNotImplemented) }
         }
