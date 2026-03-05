@@ -86,10 +86,12 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             // async-to-main matches the pattern used by all other callbacks.
             DispatchQueue.main.async {
                 self?.eventSink?([
-                    "type":       "bpmDetected",
-                    "bpm":        bpmResult.bpm,
-                    "confidence": bpmResult.confidence,
-                    "beats":      bpmResult.beats
+                    "type":        "bpmDetected",
+                    "bpm":         bpmResult.bpm,
+                    "confidence":  bpmResult.confidence,
+                    "beats":       bpmResult.beats,
+                    "beatsPerBar": bpmResult.beatsPerBar,
+                    "bars":        bpmResult.bars
                 ])
             }
         }
