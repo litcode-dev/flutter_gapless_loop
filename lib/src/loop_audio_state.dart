@@ -58,17 +58,30 @@ class BpmResult {
   /// Beat timestamps in seconds from the start of the file.
   final List<double> beats;
 
+  /// Estimated beats per bar (time signature numerator). `0` if unknown
+  /// (low confidence or audio too short). Typical values: 2, 3, 4, 6, 7.
+  final int beatsPerBar;
+
+  /// Bar start timestamps in seconds. Empty if [beatsPerBar] is `0`.
+  final List<double> bars;
+
   const BpmResult({
     required this.bpm,
     required this.confidence,
     required this.beats,
+    this.beatsPerBar = 0,
+    this.bars = const [],
   });
 
   /// Creates a [BpmResult] from the raw map sent by the native event channel.
   factory BpmResult.fromMap(Map<Object?, Object?> map) => BpmResult(
-    bpm:        (map['bpm'] as num? ?? 0).toDouble(),
-    confidence: (map['confidence'] as num? ?? 0).toDouble(),
+    bpm:         (map['bpm'] as num? ?? 0).toDouble(),
+    confidence:  (map['confidence'] as num? ?? 0).toDouble(),
     beats: ((map['beats'] as List<Object?>?) ?? const [])
+        .map((e) => (e as num).toDouble())
+        .toList(),
+    beatsPerBar: (map['beatsPerBar'] as int? ?? 0),
+    bars: ((map['bars'] as List<Object?>?) ?? const [])
         .map((e) => (e as num).toDouble())
         .toList(),
   );
