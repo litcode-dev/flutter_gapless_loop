@@ -17,3 +17,4 @@ library;
 
 export 'src/loop_audio_player.dart';
 export 'src/loop_audio_state.dart';
+export 'src/metronome_player.dart';
