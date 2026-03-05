@@ -266,3 +266,77 @@ class PanFormulaTest {
         assertEquals(1.0f, l * l + r * r, 0.01f)
     }
 }
+
+class MeterDetectorTest {
+
+    /**
+     * Generates a mono float array with 10ms-wide amplitude pulses spaced at the beat period.
+     * Beat 0 of each bar has amplitude 1.0; all other beats have amplitude 0.5.
+     * This accent pattern gives the onset autocorrelation enough signal to distinguish
+     * 3/4 from 4/4.
+     */
+    private fun pulseAtMeter(
+        bpm: Double,
+        beatsPerBar: Int,
+        sampleRate: Int = 44100,
+        durationSecs: Double = 16.0
+    ): FloatArray {
+        val n = (sampleRate * durationSecs).toInt()
+        val pcm = FloatArray(n)
+        val periodSamples = (sampleRate * 60.0 / bpm).toInt()
+        val pulseLen = (sampleRate * 0.01).toInt() // 10 ms
+        var pos = 0
+        var beat = 0
+        while (pos < n) {
+            val amp = if (beat % beatsPerBar == 0) 1.0f else 0.5f
+            val end = minOf(pos + pulseLen, n)
+            for (i in pos until end) pcm[i] = amp
+            pos += periodSamples
+            beat++
+        }
+        return pcm
+    }
+
+    @Test
+    fun `beatsPerBar is zero for silence`() {
+        val pcm = FloatArray(44100 * 5) { 0f }
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(0, result.beatsPerBar)
+        assertTrue(result.bars.isEmpty())
+    }
+
+    @Test
+    fun `beatsPerBar is zero for audio shorter than 2 seconds`() {
+        val pcm = FloatArray(44100) { 0.5f }
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(0, result.beatsPerBar)
+        assertTrue(result.bars.isEmpty())
+    }
+
+    @Test
+    fun `beatsPerBar is 4 for accented 4-4 click track`() {
+        val pcm = pulseAtMeter(120.0, 4)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(4, result.beatsPerBar)
+    }
+
+    @Test
+    fun `beatsPerBar is 3 for accented 3-4 waltz click track`() {
+        val pcm = pulseAtMeter(120.0, 3)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertEquals(3, result.beatsPerBar)
+    }
+
+    @Test
+    fun `bars list is monotonically increasing`() {
+        val pcm = pulseAtMeter(120.0, 4)
+        val result = BpmDetector.detect(pcm, 44100, 1)
+        assertTrue(result.bars.size >= 2, "Expected at least 2 bars")
+        for (i in 1 until result.bars.size) {
+            assertTrue(
+                result.bars[i] > result.bars[i - 1],
+                "Non-monotonic: bars[$i]=${result.bars[i]} <= bars[${i-1}]=${result.bars[i-1]}"
+            )
+        }
+    }
+}
