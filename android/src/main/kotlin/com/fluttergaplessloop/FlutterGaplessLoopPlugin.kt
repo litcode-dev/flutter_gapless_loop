@@ -245,10 +245,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         }
         eng.onBpmDetected = { bpmResult ->
             sendEvent(mapOf(
-                "type"       to "bpmDetected",
-                "bpm"        to bpmResult.bpm,
-                "confidence" to bpmResult.confidence,
-                "beats"      to bpmResult.beats
+                "type"        to "bpmDetected",
+                "bpm"         to bpmResult.bpm,
+                "confidence"  to bpmResult.confidence,
+                "beats"       to bpmResult.beats,
+                "beatsPerBar" to bpmResult.beatsPerBar,
+                "bars"        to bpmResult.bars
             ))
         }
     }
