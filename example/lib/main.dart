@@ -640,6 +640,13 @@ class _BpmCard extends StatelessWidget {
         const SizedBox(height: 4),
         Text('Confidence: $confidencePct%  ·  ${r.beats.length} beats detected',
             style: Theme.of(context).textTheme.bodySmall),
+        if (r.beatsPerBar > 0) ...[
+          const SizedBox(height: 2),
+          Text(
+            '${r.beatsPerBar}/4 time  ·  ${r.bars.length} bars',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ],
     );
   }
