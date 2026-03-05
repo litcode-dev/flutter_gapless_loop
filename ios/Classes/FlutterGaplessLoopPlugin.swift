@@ -344,6 +344,14 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 )) }
                 return
             }
+            guard remoteURL.scheme == "https" || remoteURL.scheme == "http" else {
+                DispatchQueue.main.async { result(FlutterError(
+                    code: "INVALID_ARGS",
+                    message: "URL must use http or https scheme: \(urlString)",
+                    details: nil
+                )) }
+                return
+            }
             let task = URLSession.shared.dataTask(with: remoteURL) { [weak self] data, response, error in
                 guard let self else { return }
                 if let error {
@@ -376,9 +384,9 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 }
                 let ext = remoteURL.pathExtension.isEmpty ? "wav" : remoteURL.pathExtension
                 let tmp = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("flutter_gapless_\(Date().timeIntervalSince1970).\(ext)")
+                    .appendingPathComponent("flutter_gapless_\(UUID().uuidString).\(ext)")
+                defer { try? FileManager.default.removeItem(at: tmp) }
                 do {
-                    defer { try? FileManager.default.removeItem(at: tmp) }
                     try data.write(to: tmp)
                     try eng.loadFile(url: tmp)
                     DispatchQueue.main.async { result(nil) }
