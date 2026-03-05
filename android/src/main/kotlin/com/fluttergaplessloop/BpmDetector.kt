@@ -80,7 +80,13 @@ internal object BpmDetector {
         val period = round(sampleRate.toDouble() / (estimatedBpm / 60.0) / HOP_SIZE).toInt()
         val beats  = trackBeats(onset, period, sampleRate)
 
-        return BpmDetectionResult(estimatedBpm, confidence, beats)
+        val (beatsPerBar, bars) = if (confidence >= 0.3) {
+            detectMeter(onset, period, beats, sampleRate)
+        } else {
+            Pair(0, emptyList())
+        }
+
+        return BpmDetectionResult(estimatedBpm, confidence, beats, beatsPerBar, bars)
     }
 
     // ─── Private Helpers ──────────────────────────────────────────────────────
@@ -180,5 +186,64 @@ internal object BpmDetector {
         return beatFrames
             .map { f -> f.toDouble() * HOP_SIZE / sampleRate }
             .filter { ts -> ts >= microFadeSeconds }
+    }
+
+    /**
+     * Infers meter (beats per bar) from the onset envelope using bar-level autocorrelation.
+     *
+     * Evaluates onset autocorrelation at lags of 2, 3, 4, 6, and 7 beat periods, weighted
+     * by a Gaussian prior favouring m=4 (σ=1.5). The candidate with the highest weighted
+     * score wins. Bar timestamps are derived by stepping through [beats] at [beatsPerBar]
+     * intervals from the beat with the strongest onset (the downbeat).
+     *
+     * Returns beatsPerBar=0 and empty bars if detection is not possible.
+     */
+    private fun detectMeter(
+        onset: FloatArray,
+        beatPeriod: Int,
+        beats: List<Double>,
+        sampleRate: Int
+    ): Pair<Int, List<Double>> {
+        val candidates   = intArrayOf(2, 3, 4, 6, 7)
+        val priorMean    = 4.0
+        val priorSigma   = 1.5
+        val n            = onset.size
+
+        var bestMeter = 0
+        var bestScore = -Double.MAX_VALUE
+
+        for (m in candidates) {
+            val lag = m * beatPeriod
+            if (lag >= n) continue
+            val count = n - lag
+            var sum = 0.0
+            for (t in 0 until count) sum += onset[t].toDouble() * onset[t + lag].toDouble()
+            val ac = sum / count
+            val z = (m.toDouble() - priorMean) / priorSigma
+            val weighted = ac * exp(-0.5 * z * z)
+            if (weighted > bestScore) { bestScore = weighted; bestMeter = m }
+        }
+
+        if (bestMeter == 0 || beats.size < bestMeter) return Pair(0, emptyList())
+
+        // Find the beat with the strongest onset value → use as downbeat anchor
+        var strongestIdx = 0
+        var strongestStrength = 0f
+        for (i in beats.indices) {
+            val frame = (beats[i] * sampleRate / HOP_SIZE).toInt().coerceIn(0, n - 1)
+            if (onset[frame] > strongestStrength) {
+                strongestStrength = onset[frame]
+                strongestIdx = i
+            }
+        }
+
+        // Step forward and backward from strongestIdx by bestMeter to collect bar starts
+        val barIndices = mutableListOf<Int>()
+        var idx = strongestIdx
+        while (idx < beats.size) { barIndices.add(idx); idx += bestMeter }
+        idx = strongestIdx - bestMeter
+        while (idx >= 0) { barIndices.add(0, idx); idx -= bestMeter }
+
+        return Pair(bestMeter, barIndices.map { beats[it] })
     }
 }
