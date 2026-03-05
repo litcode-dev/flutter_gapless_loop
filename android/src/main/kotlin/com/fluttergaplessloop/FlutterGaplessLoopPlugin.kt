@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Flutter plugin entry point for flutter_gapless_loop (Android).
@@ -175,6 +176,62 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                         result.error("LOAD_FAILED", e.message, null)
                     } finally {
                         try { assetFd.close() } catch (_: Exception) {}
+                    }
+                }
+            }
+
+            // ── Load from HTTP/HTTPS URL ──────────────────────────────────────
+            "loadUrl" -> {
+                val urlString = call.argument<String>("url")
+                    ?: return result.error("INVALID_ARGS", "'url' is required", null)
+                val scheme = try { java.net.URI(urlString).scheme?.lowercase() } catch (_: Exception) { null }
+                if (scheme != "http" && scheme != "https") {
+                    return result.error("INVALID_ARGS", "URL must use http or https scheme: $urlString", null)
+                }
+                pluginScope.launch {
+                    val tempFile = try {
+                        withContext(Dispatchers.IO) {
+                            val conn = java.net.URL(urlString).openConnection() as java.net.HttpURLConnection
+                            try {
+                                conn.connectTimeout = 15_000
+                                conn.readTimeout    = 30_000
+                                conn.connect()
+                                val status = conn.responseCode
+                                if (status !in 200..299) {
+                                    throw LoopAudioException(LoopEngineError.DecodeFailed("HTTP $status: $urlString"))
+                                }
+                                val ext = urlString.substringAfterLast('.', "wav")
+                                    .substringBefore('?').take(10).ifEmpty { "wav" }
+                                val tmp = java.io.File(
+                                    pluginBinding?.applicationContext?.cacheDir,
+                                    "flutter_gapless_${java.util.UUID.randomUUID()}.$ext"
+                                )
+                                conn.inputStream.use { input ->
+                                    tmp.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                tmp
+                            } finally {
+                                conn.disconnect()
+                            }
+                        }
+                    } catch (e: LoopAudioException) {
+                        Log.e(TAG, "loadUrl download failed: ${e.message}")
+                        return@launch result.error("DOWNLOAD_FAILED", e.message, null)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "loadUrl download failed: ${e.message}")
+                        return@launch result.error("DOWNLOAD_FAILED", e.message, null)
+                    }
+                    try {
+                        eng.loadFile(tempFile.absolutePath)
+                        result.success(null)
+                    } catch (e: LoopAudioException) {
+                        Log.e(TAG, "loadUrl loadFile failed: ${e.message}")
+                        result.error("LOAD_FAILED", e.message, null)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "loadUrl loadFile failed: ${e.message}")
+                        result.error("LOAD_FAILED", e.message, null)
+                    } finally {
+                        tempFile.delete()
                     }
                 }
             }
