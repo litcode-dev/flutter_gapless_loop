@@ -346,7 +346,8 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             }
             let task = URLSession.shared.dataTask(with: remoteURL) { [weak self] data, response, error in
                 guard let self else { return }
-                if let error = error {
+                if let error {
+                    self.logger.error("loadUrl download failed: \(error.localizedDescription)")
                     DispatchQueue.main.async { result(FlutterError(
                         code: "DOWNLOAD_FAILED",
                         message: error.localizedDescription,
@@ -356,6 +357,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 }
                 if let httpResponse = response as? HTTPURLResponse,
                    !(200..<300).contains(httpResponse.statusCode) {
+                    self.logger.error("loadUrl download failed: HTTP \(httpResponse.statusCode): \(urlString)")
                     DispatchQueue.main.async { result(FlutterError(
                         code: "DOWNLOAD_FAILED",
                         message: "HTTP \(httpResponse.statusCode): \(urlString)",
@@ -364,6 +366,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                     return
                 }
                 guard let data = data else {
+                    self.logger.error("loadUrl download failed: no data received for \(urlString)")
                     DispatchQueue.main.async { result(FlutterError(
                         code: "DOWNLOAD_FAILED",
                         message: "No data received",
@@ -375,8 +378,8 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent("flutter_gapless_\(Date().timeIntervalSince1970).\(ext)")
                 do {
-                    try data.write(to: tmp)
                     defer { try? FileManager.default.removeItem(at: tmp) }
+                    try data.write(to: tmp)
                     try eng.loadFile(url: tmp)
                     DispatchQueue.main.async { result(nil) }
                 } catch {
