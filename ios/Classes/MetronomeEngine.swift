@@ -8,7 +8,6 @@ import os.log
 /// Beat-tick events (UI hint, ±5 ms jitter) are fired via `DispatchSourceTimer`.
 ///
 /// All public methods must be called from the main thread (or `audioQueue`-safe callers).
-@available(iOS 14.0, *)
 final class MetronomeEngine {
 
     // MARK: - Callbacks (called on main thread)

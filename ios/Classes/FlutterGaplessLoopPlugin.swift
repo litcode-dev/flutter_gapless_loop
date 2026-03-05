@@ -8,7 +8,6 @@ import os.log
 
 /// Dedicated FlutterStreamHandler for the metronome event channel.
 /// Kept separate from the loop-player handler to isolate lifecycle.
-@available(iOS 14.0, *)
 private final class MetronomeStreamHandler: NSObject, FlutterStreamHandler {
     var eventSink: FlutterEventSink?
 
@@ -30,7 +29,6 @@ private final class MetronomeStreamHandler: NSObject, FlutterStreamHandler {
 ///
 /// Using a separate delegate object prevents name collisions between
 /// the metronome's "stop"/"dispose" and the loop player's identically-named methods.
-@available(iOS 14.0, *)
 private final class MetronomeMethodHandler: NSObject, FlutterPlugin {
     static func register(with registrar: FlutterPluginRegistrar) {}
 
