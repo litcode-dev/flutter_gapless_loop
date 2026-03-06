@@ -54,9 +54,12 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   BpmResult? _bpmResult;
 
+  AmplitudeEvent _amplitude = const AmplitudeEvent(rms: 0, peak: 0);
+
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<String>? _errorSub;
   StreamSubscription<BpmResult>? _bpmSub;
+  StreamSubscription<AmplitudeEvent>? _ampSub;
   Timer? _positionTimer;
 
   @override
@@ -64,6 +67,9 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     super.initState();
     _stateSub = _player.stateStream.listen(_onStateChange);
     _errorSub = _player.errorStream.listen(_onError);
+    _ampSub   = _player.amplitudeStream.listen((a) {
+      setState(() => _amplitude = a);
+    });
     _bpmSub = _player.bpmStream.listen((r) {
       setState(() {
         _bpmResult = r;
@@ -82,6 +88,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     _stateSub?.cancel();
     _errorSub?.cancel();
     _bpmSub?.cancel();
+    _ampSub?.cancel();
     _positionTimer?.cancel();
     _bpmRepeatTimer?.cancel();
     _bpmController.dispose();
@@ -454,6 +461,13 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 ),
               ],
             ),
+
+            const Divider(),
+
+            // ── Amplitude Meter ────────────────────────────────────
+            Text('Amplitude', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            _AmplitudeMeter(amplitude: _amplitude),
 
             const Divider(),
 
@@ -949,6 +963,83 @@ class _MasterSliderRow extends StatelessWidget {
           child: Text(display,
               style: Theme.of(context).textTheme.bodySmall,
               textAlign: TextAlign.right),
+        ),
+      ],
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Amplitude Meter
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _AmplitudeMeter extends StatelessWidget {
+  const _AmplitudeMeter({required this.amplitude});
+
+  final AmplitudeEvent amplitude;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final labelStyle  = Theme.of(context).textTheme.bodySmall;
+
+    return Column(
+      children: [
+        _LevelRow(
+          label: 'RMS',
+          value: amplitude.rms,
+          color: colorScheme.primary,
+          labelStyle: labelStyle,
+        ),
+        const SizedBox(height: 6),
+        _LevelRow(
+          label: 'Peak',
+          value: amplitude.peak,
+          color: colorScheme.error,
+          labelStyle: labelStyle,
+        ),
+      ],
+    );
+  }
+}
+
+class _LevelRow extends StatelessWidget {
+  const _LevelRow({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.labelStyle,
+  });
+
+  final String label;
+  final double value;
+  final Color color;
+  final TextStyle? labelStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(width: 36, child: Text(label, style: labelStyle)),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 12,
+              backgroundColor: Colors.grey.shade200,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 40,
+          child: Text(
+            value.toStringAsFixed(3),
+            style: labelStyle,
+            textAlign: TextAlign.right,
+          ),
         ),
       ],
     );
