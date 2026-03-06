@@ -4,6 +4,10 @@ import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUp(() {
+    LoopAudioMaster.resetForTesting();
+  });
+
   test('LoopAudioPlayer can be instantiated', () {
     final player = LoopAudioPlayer();
     expect(player, isNotNull);

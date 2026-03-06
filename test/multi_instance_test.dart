@@ -9,6 +9,7 @@ void main() {
   late List<MethodCall> metroCalls;
 
   setUp(() {
+    LoopAudioMaster.resetForTesting();
     calls = [];
     metroCalls = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

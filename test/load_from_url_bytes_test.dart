@@ -12,6 +12,7 @@ void main() {
   late List<MethodCall> methodCalls;
 
   setUp(() {
+    LoopAudioMaster.resetForTesting();
     methodCalls = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
