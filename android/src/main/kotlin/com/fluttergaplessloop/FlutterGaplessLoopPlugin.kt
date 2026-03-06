@@ -337,6 +337,14 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 "bars"        to bpmResult.bars
             ))
         }
+        eng.onAmplitude = { rms, peak ->
+            sendEvent(mapOf(
+                "playerId" to playerId,
+                "type"     to "amplitude",
+                "rms"      to rms,
+                "peak"     to peak
+            ))
+        }
     }
 
     /**

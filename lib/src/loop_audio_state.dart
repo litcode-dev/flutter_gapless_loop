@@ -43,6 +43,30 @@ class RouteChangeEvent {
   const RouteChangeEvent(this.reason);
 }
 
+/// Real-time audio amplitude (level) emitted by [LoopAudioPlayer.amplitudeStream].
+///
+/// Emitted approximately 20 times per second while the player is in [PlayerState.playing].
+/// Both values are in [0.0, 1.0] where 0.0 is silence and 1.0 is full scale.
+class AmplitudeEvent {
+  /// Root-mean-square level of the current audio buffer.
+  ///
+  /// A good choice for driving a smooth VU meter.
+  final double rms;
+
+  /// Peak sample magnitude of the current audio buffer.
+  ///
+  /// Reacts faster than [rms]; use for peak-hold indicators.
+  final double peak;
+
+  const AmplitudeEvent({required this.rms, required this.peak});
+
+  /// Creates an [AmplitudeEvent] from the raw map sent by the native event channel.
+  factory AmplitudeEvent.fromMap(Map<Object?, Object?> map) => AmplitudeEvent(
+    rms:  (map['rms']  as num? ?? 0).toDouble().clamp(0.0, 1.0),
+    peak: (map['peak'] as num? ?? 0).toDouble().clamp(0.0, 1.0),
+  );
+}
+
 /// The result of BPM/tempo detection on a loaded audio file.
 ///
 /// Emitted via [LoopAudioPlayer.bpmStream] after every successful load.

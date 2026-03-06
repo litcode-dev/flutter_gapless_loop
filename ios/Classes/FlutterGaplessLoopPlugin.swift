@@ -176,6 +176,16 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 ])
             }
         }
+
+        eng.onAmplitude = { [weak self] rms, peak in
+            // Already dispatched to main by LoopAudioEngine.
+            self?.eventSink?([
+                "playerId": playerId,
+                "type":     "amplitude",
+                "rms":      rms,
+                "peak":     peak
+            ])
+        }
     }
 
     // MARK: - FlutterPlugin Method Channel (loop player)

@@ -86,6 +86,10 @@ public class LoopAudioEngine {
     /// Always dispatched to `DispatchQueue.main`.
     public var onBpmDetected: ((BpmResult) -> Void)?
 
+    /// Called with (rms, peak) amplitude in [0, 1] approximately 20 times per second
+    /// while the engine is playing. Always dispatched to `DispatchQueue.main`.
+    public var onAmplitude: ((Float, Float) -> Void)?
+
     // MARK: - Private: Engine Infrastructure
 
     private let engine = AVAudioEngine()
@@ -141,6 +145,14 @@ public class LoopAudioEngine {
 
     /// Tracks whether the engine graph has been built. Prevents duplicate attach/connect calls.
     private var isGraphConfigured = false
+
+    // MARK: - Private: Amplitude Tap
+
+    /// Whether an AVAudioEngine tap is currently installed on the main mixer output.
+    private var _tapInstalled = false
+
+    /// Timestamp of the last amplitude event dispatch. Used to throttle to ~20 Hz.
+    private var _lastAmplitudeTime: TimeInterval = 0
 
     // MARK: - Public: Computed Properties
 
@@ -285,6 +297,7 @@ public class LoopAudioEngine {
             self.scheduleForCurrentMode()
             self.nodeA.play()
             self.setState(.playing)
+            self.installAmplitudeTap()
             self.logger.info("play: mode=\(String(describing: self.playbackMode))")
         }
     }
@@ -293,6 +306,7 @@ public class LoopAudioEngine {
     public func pause() {
         audioQueue.async { [weak self] in
             guard let self, self._state == .playing else { return }
+            self.removeAmplitudeTap()
             self.nodeA.pause()
             if self.nodeBIsConnected { self.nodeB.pause() }
             self.setState(.paused)
@@ -307,6 +321,7 @@ public class LoopAudioEngine {
             self.nodeA.play()
             if self.nodeBIsConnected { self.nodeB.play() }
             self.setState(.playing)
+            self.installAmplitudeTap()
             self.logger.info("resume")
         }
     }
@@ -315,6 +330,7 @@ public class LoopAudioEngine {
     public func stop() {
         audioQueue.async { [weak self] in
             guard let self else { return }
+            self.removeAmplitudeTap()
             self.nodeA.stop()
             if self.nodeBIsConnected { self.nodeB.stop() }
             self.setState(.stopped)
@@ -503,6 +519,7 @@ public class LoopAudioEngine {
         bpmWorkItem = nil
         audioQueue.async { [weak self] in
             guard let self else { return }
+            self.removeAmplitudeTap()
             self.nodeA.stop()
             if self.nodeBIsConnected { self.nodeB.stop() }
             self.engine.stop()
@@ -853,6 +870,62 @@ public class LoopAudioEngine {
                 break
             }
         }
+    }
+
+    // MARK: - Private: Amplitude Tap
+
+    /// Installs a tap on the main mixer output node to measure RMS and peak amplitude.
+    ///
+    /// The tap fires every ~23 ms (1024 frames at 44100 Hz). Events are throttled
+    /// to ~20 Hz (every 50 ms) to keep the event channel lightweight.
+    /// Must be called from `audioQueue` or before `engine.start()`.
+    private func installAmplitudeTap() {
+        guard !_tapInstalled else { return }
+        guard onAmplitude != nil else { return }
+        _tapInstalled = true
+        _lastAmplitudeTime = 0
+
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            guard let self, let onAmplitude = self.onAmplitude else { return }
+
+            // Throttle to ~20 Hz
+            let now = Date.timeIntervalSinceReferenceDate
+            guard now - self._lastAmplitudeTime >= 0.05 else { return }
+            self._lastAmplitudeTime = now
+
+            // Compute RMS and peak across all channels and frames.
+            guard let channelData = buffer.floatChannelData else { return }
+            let frameCount = Int(buffer.frameLength)
+            let channelCount = Int(buffer.format.channelCount)
+            guard frameCount > 0 else { return }
+
+            var sumSquares: Float = 0
+            var peak: Float = 0
+            let totalSamples = frameCount * channelCount
+            for ch in 0..<channelCount {
+                let data = channelData[ch]
+                for i in 0..<frameCount {
+                    let s = data[i]
+                    sumSquares += s * s
+                    let abs = s < 0 ? -s : s
+                    if abs > peak { peak = abs }
+                }
+            }
+            let rms = (sumSquares / Float(totalSamples)).squareRoot()
+
+            DispatchQueue.main.async {
+                onAmplitude(min(rms, 1.0), min(peak, 1.0))
+            }
+        }
+        logger.debug("Amplitude tap installed")
+    }
+
+    /// Removes the tap from the main mixer output node.
+    private func removeAmplitudeTap() {
+        guard _tapInstalled else { return }
+        _tapInstalled = false
+        engine.mainMixerNode.removeTap(onBus: 0)
+        logger.debug("Amplitude tap removed")
     }
 
     // MARK: - Private: BPM Detection
