@@ -437,8 +437,28 @@ All methods throw `StateError` if called after `dispose()`.
 | `stop()` | Stop the metronome immediately. |
 | `setBpm(double bpm)` | Update tempo; regenerates bar buffer. No-op if not started. |
 | `setBeatsPerBar(int beatsPerBar)` | Update time signature; regenerates bar buffer. No-op if not started. |
+| `setVolume(double volume)` | Instance volume in `[0.0, 1.0]`. Effective volume = `localVolume × MetronomeMaster.volume`. |
+| `setPan(double pan)` | Instance pan in `[-1.0, 1.0]`. Effective pan = `clamp(localPan + MetronomeMaster.pan, -1, 1)`. |
 | `beatStream` | `Stream<int>` — beat index (0 = downbeat, 1…N-1 = click). UI hint; ±5 ms jitter. |
 | `dispose()` | Release all native resources. Instance unusable after this. |
+
+### `MetronomeMaster`
+
+`MetronomeMaster` is a static class that applies master volume and pan across all live `MetronomePlayer` instances. Per-instance relative levels are preserved.
+
+```dart
+await MetronomeMaster.setVolume(0.5); // all instances scaled by 0.5
+await MetronomeMaster.setPan(0.2);    // all instances shifted right by 0.2
+await MetronomeMaster.reset();        // restore volume=1.0, pan=0.0
+```
+
+| Member | Description |
+|--------|-------------|
+| `volume` | Current master volume getter (default `1.0`) |
+| `pan` | Current master pan getter (default `0.0`) |
+| `setVolume(double volume)` | Scales all live instances: `effectiveVolume = localVolume × masterVolume` |
+| `setPan(double pan)` | Shifts all live instances: `effectivePan = clamp(localPan + masterPan, -1, 1)` |
+| `reset()` | Restores `volume=1.0` / `pan=0.0` and re-applies to all instances |
 
 ### `PlayerState`
 

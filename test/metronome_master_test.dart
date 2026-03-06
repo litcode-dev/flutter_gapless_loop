@@ -122,7 +122,7 @@ void main() {
     });
 
     test('skips disposed instances', () async {
-      final m1 = MetronomePlayer();
+      MetronomePlayer(); // live instance in registry, not otherwise used
       final m2 = MetronomePlayer();
       await m2.dispose();
       calls.clear();
