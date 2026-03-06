@@ -11,6 +11,9 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioE
 - Automatic time signature detection (beats per bar + bar timestamps)
 - Load audio from an asset, a file path, raw bytes, or a URL
 - Built-in `MetronomePlayer` — sample-accurate click track with accent, runs simultaneously with the loop player
+- Per-instance volume and pan on both `LoopAudioPlayer` and `MetronomePlayer`
+- `LoopAudioMaster` — static group-bus fader for all live `LoopAudioPlayer` instances
+- `MetronomeMaster` — static group-bus fader for all live `MetronomePlayer` instances
 - Pitch-preserving playback rate control (time-stretching)
 - Stereo pan control
 - Volume control

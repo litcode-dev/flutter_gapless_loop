@@ -1,4 +1,16 @@
 
+## 0.0.4
+
+### New features
+
+* **`LoopAudioMaster`.** A new static group-bus controller for all live `LoopAudioPlayer` instances. `setVolume` scales every instance multiplicatively (`effectiveVolume = localVolume × masterVolume`); `setPan` shifts every instance additively (`effectivePan = clamp(localPan + masterPan, −1, 1)`). `reset()` restores defaults and re-applies. Per-instance relative levels are preserved at the Dart layer — native engines receive only the final effective float.
+* **`MetronomeMaster`.** Same group-bus pattern for all live `MetronomePlayer` instances.
+* **`MetronomePlayer.setVolume` / `setPan`.** New per-instance volume and pan control on `MetronomePlayer`. Effective values are computed multiplicatively with `MetronomeMaster` before being sent to native. iOS: `AVAudioEngine.mainMixerNode.volume` / `.pan`, re-applied after every `setupAndPlay` rebuild. Android: `AudioTrack.setStereoVolume` via `panToGains`, re-applied after every `playBarBuffer` rebuild.
+
+### Breaking changes
+
+* `LoopAudioPlayer.setVolume` previously threw `ArgumentError` for values outside `[0.0, 1.0]`; it now silently clamps to be consistent with `setPan` and the new master API.
+
 ## 0.0.3
 
 ### New features
