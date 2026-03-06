@@ -598,6 +598,11 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
             const Divider(),
 
+            // ── Master Controls ─────────────────────────────────────────
+            const _MasterControlsCard(),
+
+            const Divider(),
+
             // ── Metronome ──────────────────────────────────────────────
             const _MetronomeCard(),
           ],
@@ -785,6 +790,165 @@ class _MetronomeCardState extends State<_MetronomeCard> {
               foregroundColor: Colors.white,
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Master Controls Card
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _MasterControlsCard extends StatefulWidget {
+  const _MasterControlsCard();
+
+  @override
+  State<_MasterControlsCard> createState() => _MasterControlsCardState();
+}
+
+class _MasterControlsCardState extends State<_MasterControlsCard> {
+  double _loopVol  = 1.0;
+  double _loopPan  = 0.0;
+  double _metroVol = 1.0;
+  double _metroPan = 0.0;
+
+  Future<void> _resetAll() async {
+    await LoopAudioMaster.reset();
+    await MetronomeMaster.reset();
+    setState(() {
+      _loopVol  = LoopAudioMaster.volume;
+      _loopPan  = LoopAudioMaster.pan;
+      _metroVol = MetronomeMaster.volume;
+      _metroPan = MetronomeMaster.pan;
+    });
+  }
+
+  String _panLabel(double v) => v == 0.0
+      ? 'C'
+      : v < 0
+          ? 'L ${(-v * 100).toStringAsFixed(0)}%'
+          : 'R ${(v * 100).toStringAsFixed(0)}%';
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = Theme.of(context)
+        .textTheme
+        .labelMedium
+        ?.copyWith(color: Colors.grey.shade600);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Master Controls',
+                style: Theme.of(context).textTheme.titleSmall),
+            TextButton.icon(
+              onPressed: _resetAll,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Reset All'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+
+        // ── Loop Player Master ──────────────────────────────────
+        Text('Loop Player', style: labelStyle),
+        _MasterSliderRow(
+          label: 'Vol',
+          value: _loopVol,
+          min: 0.0,
+          max: 1.0,
+          display: _loopVol.toStringAsFixed(2),
+          onChanged: (v) {
+            setState(() => _loopVol = v);
+            LoopAudioMaster.setVolume(v);
+          },
+        ),
+        _MasterSliderRow(
+          label: 'Pan',
+          value: _loopPan,
+          min: -1.0,
+          max: 1.0,
+          display: _panLabel(_loopPan),
+          onChanged: (v) {
+            setState(() => _loopPan = v);
+            LoopAudioMaster.setPan(v);
+          },
+        ),
+
+        const SizedBox(height: 8),
+
+        // ── Metronome Master ────────────────────────────────────
+        Text('Metronome', style: labelStyle),
+        _MasterSliderRow(
+          label: 'Vol',
+          value: _metroVol,
+          min: 0.0,
+          max: 1.0,
+          display: _metroVol.toStringAsFixed(2),
+          onChanged: (v) {
+            setState(() => _metroVol = v);
+            MetronomeMaster.setVolume(v);
+          },
+        ),
+        _MasterSliderRow(
+          label: 'Pan',
+          value: _metroPan,
+          min: -1.0,
+          max: 1.0,
+          display: _panLabel(_metroPan),
+          onChanged: (v) {
+            setState(() => _metroPan = v);
+            MetronomeMaster.setPan(v);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _MasterSliderRow extends StatelessWidget {
+  const _MasterSliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.display,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final String display;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 36,
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Expanded(
+          child: Slider(
+            value: value,
+            min: min,
+            max: max,
+            divisions: 200,
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 54,
+          child: Text(display,
+              style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.right),
         ),
       ],
     );
