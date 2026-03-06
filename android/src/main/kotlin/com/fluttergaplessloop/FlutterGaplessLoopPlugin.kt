@@ -25,6 +25,10 @@ import kotlinx.coroutines.withContext
  * Mirrors the iOS FlutterGaplessLoopPlugin in channel names, method names, and
  * event payload shapes so the shared Dart [LoopAudioPlayer] class works on both platforms.
  *
+ * Multiple concurrent players are supported: each Dart [LoopAudioPlayer] instance
+ * includes a unique `playerId` in every method call, and all events are tagged with
+ * the same `playerId` so the Dart layer can filter them without cross-talk.
+ *
  * Threading contract:
  * - [onMethodCall] is called on the platform (main) thread by Flutter.
  * - [LoopAudioEngine.loadFile] suspends on IO; result is returned on Main.
@@ -54,8 +58,11 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     /** EventSink for pushing beat-tick events to Dart. Null when not subscribed. */
     private var metronomeEventSink: EventChannel.EventSink? = null
 
-    private var engine: LoopAudioEngine? = null
-    private var metronomeEngine: MetronomeEngine? = null
+    /** Registry of active loop engines keyed by player ID. */
+    private val engines    = HashMap<String, LoopAudioEngine>()
+    /** Registry of active metronome engines keyed by player ID. */
+    private val metronomes = HashMap<String, MetronomeEngine>()
+
     private var pluginBinding: FlutterPlugin.FlutterPluginBinding? = null
 
     /** Coroutine scope for async operations (file loading). Main dispatcher = Flutter-safe. */
@@ -97,10 +104,10 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         eventChannel.setStreamHandler(null)
         metronomeMethodChannel.setMethodCallHandler(null)
         metronomeEventChannel.setStreamHandler(null)
-        engine?.dispose()
-        engine = null
-        metronomeEngine?.dispose()
-        metronomeEngine = null
+        engines.values.forEach { it.dispose() }
+        engines.clear()
+        metronomes.values.forEach { it.dispose() }
+        metronomes.clear()
         pluginBinding = null
         Log.i(TAG, "Detached from engine")
     }
@@ -109,8 +116,6 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
-        // Lazily create the engine when Dart subscribes (matches iOS onListen behavior)
-        getOrCreateEngine()
         Log.i(TAG, "Event channel opened")
     }
 
@@ -122,8 +127,11 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     // ─── MethodChannel.MethodCallHandler ─────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: Result) {
+        val playerId = call.argument<String>("playerId")
+            ?: return result.error("INVALID_ARGS", "'playerId' is required", null)
+
         val eng = try {
-            getOrCreateEngine()
+            getOrCreateEngine(playerId)
         } catch (e: IllegalStateException) {
             return result.error("NOT_ATTACHED", e.message, null)
         }
@@ -153,13 +161,9 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 val binding = pluginBinding
                     ?: return result.error("REGISTRAR_MISSING", "Plugin not attached", null)
 
-                // Resolve Flutter asset key (e.g. "assets/loop.wav") → relative APK assets path.
-                // getAssetFilePathBySubpath handles full subpath keys, including subdirectories,
-                // unlike getAssetFilePathByName which only matches by filename.
                 val assetPath = binding.flutterAssets.getAssetFilePathBySubpath(assetKey)
                     ?: return result.error("ASSET_NOT_FOUND", "Asset not found: $assetKey", null)
 
-                // Open asset as AssetFileDescriptor — works for assets inside the APK
                 val assetFd = try {
                     binding.applicationContext.assets.openFd(assetPath)
                 } catch (e: Exception) {
@@ -278,7 +282,7 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
             "dispose" -> {
                 eng.dispose()
-                engine = null
+                engines.remove(playerId)
                 result.success(null)
             }
 
@@ -289,42 +293,42 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     // ─── Private helpers ──────────────────────────────────────────────────────
 
     /**
-     * Returns the existing engine or creates a fresh one.
+     * Returns the existing engine for [playerId], or creates a fresh one.
      *
      * Creating lazily (rather than in [onAttachedToEngine]) matches the iOS pattern
-     * where the engine is built in [onListen], allowing hot-restart to work correctly.
+     * where the engine is built on first use, allowing hot-restart to work correctly.
      */
-    private fun getOrCreateEngine(): LoopAudioEngine {
-        return engine ?: run {
+    private fun getOrCreateEngine(playerId: String): LoopAudioEngine {
+        return engines.getOrPut(playerId) {
             val ctx = pluginBinding?.applicationContext
                 ?: throw IllegalStateException("Plugin not attached to an engine")
             val eng = LoopAudioEngine(ctx)
-            wireEngineCallbacks(eng)
-            engine = eng
+            wireEngineCallbacks(eng, playerId)
             eng
         }
     }
 
     /**
-     * Connects [LoopAudioEngine] callbacks to [eventSink] so Dart receives events.
+     * Connects [LoopAudioEngine] callbacks to [eventSink], tagging each event with [playerId].
      *
      * Event payload shapes (must match iOS FlutterGaplessLoopPlugin.swift):
-     * - State change: `{"type": "stateChange", "state": "playing"}`
-     * - Error:        `{"type": "error", "message": "..."}`
-     * - Route change: `{"type": "routeChange", "reason": "headphonesUnplugged"}`
+     * - State change: `{"playerId": "loop_0", "type": "stateChange", "state": "playing"}`
+     * - Error:        `{"playerId": "loop_0", "type": "error", "message": "..."}`
+     * - Route change: `{"playerId": "loop_0", "type": "routeChange", "reason": "headphonesUnplugged"}`
      */
-    private fun wireEngineCallbacks(eng: LoopAudioEngine) {
+    private fun wireEngineCallbacks(eng: LoopAudioEngine, playerId: String) {
         eng.onStateChange = { state ->
-            sendEvent(mapOf("type" to "stateChange", "state" to state.rawValue))
+            sendEvent(mapOf("playerId" to playerId, "type" to "stateChange", "state" to state.rawValue))
         }
         eng.onError = { error ->
-            sendEvent(mapOf("type" to "error", "message" to error.toMessage()))
+            sendEvent(mapOf("playerId" to playerId, "type" to "error", "message" to error.toMessage()))
         }
         eng.onRouteChange = { reason ->
-            sendEvent(mapOf("type" to "routeChange", "reason" to reason))
+            sendEvent(mapOf("playerId" to playerId, "type" to "routeChange", "reason" to reason))
         }
         eng.onBpmDetected = { bpmResult ->
             sendEvent(mapOf(
+                "playerId"    to playerId,
                 "type"        to "bpmDetected",
                 "bpm"         to bpmResult.bpm,
                 "confidence"  to bpmResult.confidence,
@@ -337,10 +341,6 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
     /**
      * Posts an event map to [eventSink] on the platform (main) thread.
-     *
-     * Flutter requires that [EventChannel.EventSink.success] is always called from
-     * the platform thread. [mainHandler.post] guarantees this regardless of which
-     * thread the engine callback fires on.
      */
     private fun sendEvent(event: Map<String, Any>) {
         mainHandler.post { eventSink?.success(event) }
@@ -349,6 +349,9 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     // ─── Metronome ────────────────────────────────────────────────────────────
 
     private fun handleMetronomeCall(call: MethodCall, result: Result) {
+        val playerId = call.argument<String>("playerId")
+            ?: return result.error("INVALID_ARGS", "'playerId' is required", null)
+
         when (call.method) {
 
             "start" -> {
@@ -362,32 +365,32 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                     ?: return result.error("INVALID_ARGS", "'accent' required", null)
                 val ext         = call.argument<String>("extension") ?: "wav"
 
-                getOrCreateMetronomeEngine().start(bpm, beatsPerBar, clickBytes, accentBytes, ext)
+                getOrCreateMetronomeEngine(playerId).start(bpm, beatsPerBar, clickBytes, accentBytes, ext)
                 result.success(null)
             }
 
             "setBpm" -> {
                 val bpm = call.argument<Double>("bpm")
                     ?: return result.error("INVALID_ARGS", "'bpm' required", null)
-                metronomeEngine?.setBpm(bpm)
+                metronomes[playerId]?.setBpm(bpm)
                 result.success(null)
             }
 
             "setBeatsPerBar" -> {
                 val beatsPerBar = call.argument<Int>("beatsPerBar")
                     ?: return result.error("INVALID_ARGS", "'beatsPerBar' required", null)
-                metronomeEngine?.setBeatsPerBar(beatsPerBar)
+                metronomes[playerId]?.setBeatsPerBar(beatsPerBar)
                 result.success(null)
             }
 
             "stop" -> {
-                metronomeEngine?.stop()
+                metronomes[playerId]?.stop()
                 result.success(null)
             }
 
             "dispose" -> {
-                metronomeEngine?.dispose()
-                metronomeEngine = null
+                metronomes[playerId]?.dispose()
+                metronomes.remove(playerId)
                 result.success(null)
             }
 
@@ -395,21 +398,22 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         }
     }
 
-    private fun getOrCreateMetronomeEngine(): MetronomeEngine {
-        metronomeEngine?.let { return it }
-        val eng = MetronomeEngine(
-            onBeatTick = { beat ->
-                mainHandler.post {
-                    metronomeEventSink?.success(mapOf("type" to "beatTick", "beat" to beat))
+    private fun getOrCreateMetronomeEngine(playerId: String): MetronomeEngine {
+        return metronomes.getOrPut(playerId) {
+            MetronomeEngine(
+                onBeatTick = { beat ->
+                    mainHandler.post {
+                        metronomeEventSink?.success(
+                            mapOf("playerId" to playerId, "type" to "beatTick", "beat" to beat))
+                    }
+                },
+                onError = { msg ->
+                    mainHandler.post {
+                        metronomeEventSink?.success(
+                            mapOf("playerId" to playerId, "type" to "error", "message" to msg))
+                    }
                 }
-            },
-            onError = { msg ->
-                mainHandler.post {
-                    metronomeEventSink?.success(mapOf("type" to "error", "message" to msg))
-                }
-            }
-        )
-        metronomeEngine = eng
-        return eng
+            )
+        }
     }
 }
