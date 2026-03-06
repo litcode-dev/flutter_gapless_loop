@@ -473,6 +473,22 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             metronomes[pid]?.setBeatsPerBar(beatsVal)
             result(nil)
 
+        case "setVolume":
+            guard let vol = args?["volume"] as? Double else {
+                result(FlutterError(code: "INVALID_ARGS", message: "'volume' required", details: nil))
+                return
+            }
+            metronomes[pid]?.setVolume(Float(vol))
+            result(nil)
+
+        case "setPan":
+            guard let pan = args?["pan"] as? Double else {
+                result(FlutterError(code: "INVALID_ARGS", message: "'pan' required", details: nil))
+                return
+            }
+            metronomes[pid]?.setPan(Float(pan))
+            result(nil)
+
         case "stop":
             metronomes[pid]?.stop()
             result(nil)

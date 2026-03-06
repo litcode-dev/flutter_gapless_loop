@@ -31,6 +31,9 @@ final class MetronomeEngine {
     private var currentBeatsPerBar: Int    = 4
     private var isRunning = false
 
+    private var _volume: Float = 1.0
+    private var _pan:    Float = 0.0
+
     private var beatTimer: DispatchSourceTimer?
     private var beatIndex = 0
 
@@ -86,6 +89,18 @@ final class MetronomeEngine {
         rebuildAndRestart()
     }
 
+    /// Sets the playback volume (0.0–1.0). Takes effect immediately and persists across rebuilds.
+    func setVolume(_ volume: Float) {
+        _volume = volume
+        audioEngine.mainMixerNode.volume = volume
+    }
+
+    /// Sets the stereo pan position (−1.0 to 1.0). Takes effect immediately and persists across rebuilds.
+    func setPan(_ pan: Float) {
+        _pan = pan
+        audioEngine.mainMixerNode.pan = pan
+    }
+
     /// Releases all native resources.
     func dispose() {
         stop()
@@ -110,6 +125,10 @@ final class MetronomeEngine {
             onError?("AVAudioEngine.start() failed: \(error.localizedDescription)")
             return
         }
+
+        // Re-apply stored volume and pan — mainMixerNode is recreated with each new AVAudioEngine.
+        audioEngine.mainMixerNode.volume = _volume
+        audioEngine.mainMixerNode.pan    = _pan
 
         guard let bar = barBuffer else { return }
         playerNode.scheduleBuffer(bar, at: nil, options: .loops, completionHandler: nil)
