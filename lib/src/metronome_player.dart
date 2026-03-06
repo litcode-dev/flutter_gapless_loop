@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// A sample-accurate metronome that pre-generates a single-bar PCM buffer and
@@ -46,9 +47,12 @@ class MetronomePlayer {
 
   late final Stream<Map<Object?, Object?>> _events;
   bool _isDisposed = false;
+  double _localVolume = 1.0;
+  double _localPan    = 0.0;
 
   MetronomePlayer() {
     _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
+    MetronomeMaster._instances.add(this);
   }
 
   void _checkNotDisposed() {
@@ -126,9 +130,108 @@ class MetronomePlayer {
         .map((e) => e['beat'] as int? ?? 0);
   }
 
+  /// Sets this instance's volume (0.0–1.0).
+  ///
+  /// The effective volume sent to native is `localVolume × MetronomeMaster.volume`.
+  Future<void> setVolume(double volume) async {
+    _checkNotDisposed();
+    _localVolume = volume.clamp(0.0, 1.0);
+    await _applyEffectiveVolume();
+  }
+
+  /// Sets this instance's stereo pan position (−1.0 to 1.0).
+  ///
+  /// The effective pan sent to native is
+  /// `clamp(localPan + MetronomeMaster.pan, −1.0, 1.0)`.
+  Future<void> setPan(double pan) async {
+    _checkNotDisposed();
+    _localPan = pan.clamp(-1.0, 1.0);
+    await _applyEffectivePan();
+  }
+
+  Future<void> _applyEffectiveVolume() async {
+    final effective =
+        (_localVolume * MetronomeMaster._masterVolume).clamp(0.0, 1.0);
+    await _channel.invokeMethod<void>(
+        'setVolume', {'playerId': _playerId, 'volume': effective});
+  }
+
+  Future<void> _applyEffectivePan() async {
+    final effective =
+        (_localPan + MetronomeMaster._masterPan).clamp(-1.0, 1.0);
+    await _channel.invokeMethod<void>(
+        'setPan', {'playerId': _playerId, 'pan': effective});
+  }
+
   /// Releases all native resources. This instance cannot be used after dispose.
   Future<void> dispose() async {
     _isDisposed = true;
+    MetronomeMaster._instances.remove(this);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
+  }
+}
+
+/// A static group-bus controller for all live [MetronomePlayer] instances.
+///
+/// Volume is multiplicative: `effectiveVolume = localVolume × masterVolume`.
+/// Pan is additive (clamped): `effectivePan = clamp(localPan + masterPan, −1.0, 1.0)`.
+///
+/// ## Example
+/// ```dart
+/// final m1 = MetronomePlayer();
+/// final m2 = MetronomePlayer();
+/// await m1.setVolume(0.8);
+/// await m2.setVolume(0.6);
+/// await MetronomeMaster.setVolume(0.5); // m1 → 0.4, m2 → 0.3
+/// ```
+class MetronomeMaster {
+  MetronomeMaster._();
+
+  static final Set<MetronomePlayer> _instances = {};
+  static double _masterVolume = 1.0;
+  static double _masterPan    = 0.0;
+
+  /// Current master volume (0.0–1.0). Default: `1.0`.
+  static double get volume => _masterVolume;
+
+  /// Current master pan (−1.0–1.0). Default: `0.0`.
+  static double get pan => _masterPan;
+
+  /// Scales all live [MetronomePlayer] instances multiplicatively.
+  ///
+  /// Each instance's effective volume becomes `localVolume × volume`.
+  static Future<void> setVolume(double volume) async {
+    _masterVolume = volume.clamp(0.0, 1.0);
+    for (final inst in _instances) {
+      if (!inst._isDisposed) await inst._applyEffectiveVolume();
+    }
+  }
+
+  /// Shifts all live [MetronomePlayer] pans by [pan] (additive, clamped to ±1.0).
+  static Future<void> setPan(double pan) async {
+    _masterPan = pan.clamp(-1.0, 1.0);
+    for (final inst in _instances) {
+      if (!inst._isDisposed) await inst._applyEffectivePan();
+    }
+  }
+
+  /// Resets master volume to 1.0 and pan to 0.0, then re-applies to all instances.
+  static Future<void> reset() async {
+    _masterVolume = 1.0;
+    _masterPan    = 0.0;
+    for (final inst in _instances) {
+      if (!inst._isDisposed) {
+        await inst._applyEffectiveVolume();
+        await inst._applyEffectivePan();
+      }
+    }
+  }
+
+  /// Resets master state for use in tests only.
+  @visibleForTesting
+  static void resetForTesting() {
+    _masterVolume = 1.0;
+    _masterPan    = 0.0;
+    _instances.clear();
   }
 }
