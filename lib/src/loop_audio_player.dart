@@ -5,16 +5,15 @@ import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
 
-/// A player for sample-accurate gapless audio looping on iOS.
+/// A player for sample-accurate gapless audio looping on iOS and Android.
 ///
 /// Uses [MethodChannel] for commands and [EventChannel] for state/error/route events.
 ///
 /// All methods and getters may throw [PlatformException] if the native engine
 /// returns an error.
 ///
-/// Note: This plugin uses a single shared [MethodChannel] — instantiating
-/// multiple [LoopAudioPlayer] objects will result in cross-talk. Use a single
-/// instance per application.
+/// Multiple [LoopAudioPlayer] instances can run concurrently without cross-talk —
+/// each instance is independently managed by the native layer.
 ///
 /// Basic usage:
 /// ```dart
@@ -31,15 +30,25 @@ class LoopAudioPlayer {
   static const _channel = MethodChannel('flutter_gapless_loop');
   static const _eventChannel = EventChannel('flutter_gapless_loop/events');
 
+  // Shared broadcast stream — one subscription for all instances, each filters
+  // by its own playerId so events don't cross-talk.
+  static final Stream<Map<Object?, Object?>> _sharedEvents = _eventChannel
+      .receiveBroadcastStream()
+      .cast<Map<Object?, Object?>>();
+
+  static int _nextId = 0;
+  final String _playerId = 'loop_${_nextId++}';
+
+  /// The unique identifier for this player instance.
+  String get playerId => _playerId;
+
   late final Stream<Map<Object?, Object?>> _events;
 
   bool _isDisposed = false;
 
   /// Creates a new [LoopAudioPlayer].
   LoopAudioPlayer() {
-    _events = _eventChannel
-        .receiveBroadcastStream()
-        .cast<Map<Object?, Object?>>();
+    _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
   }
 
   void _checkNotDisposed() {
@@ -91,7 +100,8 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on native error.
   Future<void> load(String assetPath) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('loadAsset', {'assetKey': assetPath});
+    await _channel.invokeMethod<void>(
+        'loadAsset', {'playerId': _playerId, 'assetKey': assetPath});
   }
 
   /// Loads an audio file from an absolute file system path.
@@ -99,7 +109,8 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on native error.
   Future<void> loadFromFile(String filePath) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('load', {'path': filePath});
+    await _channel.invokeMethod<void>(
+        'load', {'playerId': _playerId, 'path': filePath});
   }
 
   /// Loads audio from raw bytes already in memory (e.g. from `dart:io`, a
@@ -124,7 +135,8 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on download failure (non-2xx) or decode error.
   Future<void> loadFromUrl(Uri uri) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('loadUrl', {'url': uri.toString()});
+    await _channel.invokeMethod<void>(
+        'loadUrl', {'playerId': _playerId, 'url': uri.toString()});
   }
 
   /// Writes [bytes] to a temp file with the given [extension], calls
@@ -145,25 +157,25 @@ class LoopAudioPlayer {
   /// Starts looping playback from the beginning (or current loop region start).
   Future<void> play() async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('play');
+    await _channel.invokeMethod<void>('play', {'playerId': _playerId});
   }
 
   /// Pauses playback. Call [resume] to continue from the same position.
   Future<void> pause() async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('pause');
+    await _channel.invokeMethod<void>('pause', {'playerId': _playerId});
   }
 
   /// Resumes paused playback.
   Future<void> resume() async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('resume');
+    await _channel.invokeMethod<void>('resume', {'playerId': _playerId});
   }
 
   /// Stops playback and resets the playback position.
   Future<void> stop() async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('stop');
+    await _channel.invokeMethod<void>('stop', {'playerId': _playerId});
   }
 
   /// Sets the loop region in seconds. Both [start] and [end] are inclusive.
@@ -176,7 +188,8 @@ class LoopAudioPlayer {
     _checkNotDisposed();
     if (start < 0) throw ArgumentError.value(start, 'start', 'must be >= 0');
     if (end <= start) throw ArgumentError('end ($end) must be greater than start ($start)');
-    await _channel.invokeMethod<void>('setLoopRegion', {'start': start, 'end': end});
+    await _channel.invokeMethod<void>(
+        'setLoopRegion', {'playerId': _playerId, 'start': start, 'end': end});
   }
 
   /// Sets the crossfade duration in seconds.
@@ -186,7 +199,8 @@ class LoopAudioPlayer {
   /// the dual-node crossfade system (Mode C or D).
   Future<void> setCrossfadeDuration(double seconds) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('setCrossfadeDuration', {'duration': seconds});
+    await _channel.invokeMethod<void>(
+        'setCrossfadeDuration', {'playerId': _playerId, 'duration': seconds});
   }
 
   /// Sets the playback volume. Range: 0.0 (silent) to 1.0 (full volume).
@@ -195,7 +209,8 @@ class LoopAudioPlayer {
     if (volume < 0.0 || volume > 1.0) {
       throw ArgumentError.value(volume, 'volume', 'must be between 0.0 and 1.0');
     }
-    await _channel.invokeMethod<void>('setVolume', {'volume': volume});
+    await _channel.invokeMethod<void>(
+        'setVolume', {'playerId': _playerId, 'volume': volume});
   }
 
   /// Sets the stereo pan position.
@@ -211,7 +226,8 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on native error.
   Future<void> setPan(double pan) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('setPan', {'pan': pan.clamp(-1.0, 1.0)});
+    await _channel.invokeMethod<void>(
+        'setPan', {'playerId': _playerId, 'pan': pan.clamp(-1.0, 1.0)});
   }
 
   /// Sets the playback rate (speed) while preserving pitch.
@@ -227,7 +243,8 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on native error.
   Future<void> setPlaybackRate(double rate) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('setPlaybackRate', {'rate': rate.clamp(0.25, 4.0)});
+    await _channel.invokeMethod<void>(
+        'setPlaybackRate', {'playerId': _playerId, 'rate': rate.clamp(0.25, 4.0)});
   }
 
   /// Seeks to [seconds] within the loaded file.
@@ -239,26 +256,29 @@ class LoopAudioPlayer {
   /// Throws [PlatformException] on native error.
   Future<void> seek(double seconds) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('seek', {'position': seconds});
+    await _channel.invokeMethod<void>(
+        'seek', {'playerId': _playerId, 'position': seconds});
   }
 
   /// Returns the total duration of the loaded file.
   Future<Duration> get duration async {
     _checkNotDisposed();
-    final secs = await _channel.invokeMethod<double>('getDuration') ?? 0.0;
+    final secs = await _channel.invokeMethod<double>(
+        'getDuration', {'playerId': _playerId}) ?? 0.0;
     return Duration(milliseconds: (secs * 1000).round());
   }
 
   /// Returns the current playback position in seconds.
   Future<double> get currentPosition async {
     _checkNotDisposed();
-    return await _channel.invokeMethod<double>('getCurrentPosition') ?? 0.0;
+    return await _channel.invokeMethod<double>(
+        'getCurrentPosition', {'playerId': _playerId}) ?? 0.0;
   }
 
   /// Releases all native resources. This instance cannot be used after calling dispose.
   Future<void> dispose() async {
     _isDisposed = true;
-    await _channel.invokeMethod<void>('dispose');
+    await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
 
   PlayerState _parseState(String s) => switch (s) {

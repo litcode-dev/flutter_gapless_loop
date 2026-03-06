@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 /// loops it on the native hardware scheduler.
 ///
 /// Runs independently from [LoopAudioPlayer] — both can play simultaneously.
+/// Multiple [MetronomePlayer] instances can also run concurrently without
+/// cross-talk; each is independently managed by the native layer.
 ///
 /// ## Example
 ///
@@ -30,13 +32,23 @@ class MetronomePlayer {
   static const _eventChannel =
       EventChannel('flutter_gapless_loop/metronome/events');
 
+  // Shared broadcast stream — one subscription for all instances, each filters
+  // by its own playerId so beat ticks don't cross-talk.
+  static final Stream<Map<Object?, Object?>> _sharedEvents = _eventChannel
+      .receiveBroadcastStream()
+      .cast<Map<Object?, Object?>>();
+
+  static int _nextId = 0;
+  final String _playerId = 'metro_${_nextId++}';
+
+  /// The unique identifier for this metronome instance.
+  String get playerId => _playerId;
+
   late final Stream<Map<Object?, Object?>> _events;
   bool _isDisposed = false;
 
   MetronomePlayer() {
-    _events = _eventChannel
-        .receiveBroadcastStream()
-        .cast<Map<Object?, Object?>>();
+    _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
   }
 
   void _checkNotDisposed() {
@@ -65,6 +77,7 @@ class MetronomePlayer {
           beatsPerBar, 'beatsPerBar', 'must be in [1, 16]');
     }
     await _channel.invokeMethod<void>('start', {
+      'playerId': _playerId,
       'bpm': bpm,
       'beatsPerBar': beatsPerBar,
       'click': click,
@@ -76,7 +89,7 @@ class MetronomePlayer {
   /// Stops the metronome immediately.
   Future<void> stop() async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('stop');
+    await _channel.invokeMethod<void>('stop', {'playerId': _playerId});
   }
 
   /// Updates tempo without stopping. Regenerates the bar buffer.
@@ -87,7 +100,7 @@ class MetronomePlayer {
     if (bpm <= 0 || bpm > 400) {
       throw ArgumentError.value(bpm, 'bpm', 'must be in (0, 400]');
     }
-    await _channel.invokeMethod<void>('setBpm', {'bpm': bpm});
+    await _channel.invokeMethod<void>('setBpm', {'playerId': _playerId, 'bpm': bpm});
   }
 
   /// Updates time signature without stopping. Regenerates the bar buffer.
@@ -100,7 +113,7 @@ class MetronomePlayer {
           beatsPerBar, 'beatsPerBar', 'must be in [1, 16]');
     }
     await _channel.invokeMethod<void>(
-        'setBeatsPerBar', {'beatsPerBar': beatsPerBar});
+        'setBeatsPerBar', {'playerId': _playerId, 'beatsPerBar': beatsPerBar});
   }
 
   /// Beat index emitted on each click: 0 = downbeat, 1…N-1 = regular beats.
@@ -116,6 +129,6 @@ class MetronomePlayer {
   /// Releases all native resources. This instance cannot be used after dispose.
   Future<void> dispose() async {
     _isDisposed = true;
-    await _channel.invokeMethod<void>('dispose');
+    await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
 }
