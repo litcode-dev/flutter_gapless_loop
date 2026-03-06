@@ -100,6 +100,9 @@ class MetronomeEngine(
     private var currentBeatsPerBar: Int    = 4
     private var isRunning = false
 
+    private var _volume: Float = 1.0f
+    private var _pan:    Float = 0.0f
+
     // ─── Public API ───────────────────────────────────────────────────────────
 
     /**
@@ -171,6 +174,24 @@ class MetronomeEngine(
         stop()
     }
 
+    /** Sets the playback volume (0.0–1.0). Takes effect immediately and persists across rebuilds. */
+    fun setVolume(volume: Float) {
+        _volume = volume
+        applyVolumeAndPan()
+    }
+
+    /** Sets the stereo pan (−1.0 to 1.0). Takes effect immediately and persists across rebuilds. */
+    fun setPan(pan: Float) {
+        _pan = pan
+        applyVolumeAndPan()
+    }
+
+    private fun applyVolumeAndPan() {
+        val track = audioTrack ?: return
+        val (l, r) = panToGains(_pan)   // top-level fun in BpmDetector.kt
+        track.setStereoVolume(_volume * l, _volume * r)
+    }
+
     // ─── Private helpers ─────────────────────────────────────────────────────
 
     private fun rebuildAndRestart() {
@@ -222,6 +243,7 @@ class MetronomeEngine(
         track.setLoopPoints(0, barFrames, -1)  // -1 = loop forever
         track.play()
         audioTrack = track
+        applyVolumeAndPan()   // re-apply stored volume and pan after each rebuild
     }
 
     private fun releaseAudioTrack() {

@@ -383,6 +383,20 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            "setVolume" -> {
+                val volume = call.argument<Double>("volume")?.toFloat()
+                    ?: return result.error("INVALID_ARGS", "'volume' required", null)
+                metronomes[playerId]?.setVolume(volume)
+                result.success(null)
+            }
+
+            "setPan" -> {
+                val pan = call.argument<Double>("pan")?.toFloat()
+                    ?: return result.error("INVALID_ARGS", "'pan' required", null)
+                metronomes[playerId]?.setPan(pan)
+                result.success(null)
+            }
+
             "stop" -> {
                 metronomes[playerId]?.stop()
                 result.success(null)
