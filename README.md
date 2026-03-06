@@ -31,8 +31,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.1
-  http: ^1.2.0   # required only if you use loadFromUrl
+  flutter_gapless_loop: ^0.0.2
 ```
 
 Then run:
@@ -54,6 +53,37 @@ await player.play();
 
 // Dispose when done
 await player.dispose();
+```
+
+---
+
+## Multiple instances
+
+You can create any number of `LoopAudioPlayer` or `MetronomePlayer` instances and run them concurrently — each is fully independent with no cross-talk:
+
+```dart
+final bass   = LoopAudioPlayer();
+final drums  = LoopAudioPlayer();
+final metro1 = MetronomePlayer();
+final metro2 = MetronomePlayer();
+
+await bass.loadFromFile('/path/to/bass.wav');
+await drums.loadFromFile('/path/to/drums.wav');
+await bass.play();
+await drums.play();
+
+await metro1.start(bpm: 120, beatsPerBar: 4, click: click, accent: accent);
+await metro2.start(bpm: 90,  beatsPerBar: 3, click: click, accent: accent);
+
+// Each player's event streams are isolated
+bass.stateStream.listen((s)  => print('bass: $s'));
+drums.bpmStream.listen((r)   => print('drums bpm: ${r.bpm}'));
+metro1.beatStream.listen((b) => print('metro1 beat: $b'));
+metro2.beatStream.listen((b) => print('metro2 beat: $b'));
+
+// Independent lifecycle — disposing one does not affect the others
+await bass.dispose();
+await metro1.dispose();
 ```
 
 ---
@@ -82,17 +112,13 @@ await player.loadFromBytes(bytes);                         // defaults to .wav
 await player.loadFromBytes(bytes, extension: 'mp3');       // explicit format hint
 ```
 
-**From a URL** (downloaded to a temp file, then loaded):
+**From a URL** (downloaded natively, then loaded):
 
 ```dart
 await player.loadFromUrl(Uri.parse('https://example.com/loop.wav'));
 ```
 
-`loadFromUrl` requires the `http` package. You can inject a custom `http.Client` for testing:
-
-```dart
-await player.loadFromUrl(uri, httpClient: myMockClient);
-```
+The download uses the platform networking stack — `URLSession` on iOS and `HttpURLConnection` on Android. No third-party HTTP package is required.
 
 All four methods decode on a background thread. Subscribe to `stateStream` to know when the file is ready.
 
@@ -384,7 +410,7 @@ All methods throw `StateError` if called after `dispose()`.
 | `load(String assetPath)` | Load from a Flutter asset key (e.g. `'assets/loop.wav'`). |
 | `loadFromFile(String filePath)` | Load from an absolute file system path. |
 | `loadFromBytes(Uint8List bytes, {String extension})` | Load from raw audio bytes. `extension` defaults to `'wav'`. |
-| `loadFromUrl(Uri uri, {http.Client? httpClient})` | Download from URL and load. Throws `Exception` on non-2xx response. |
+| `loadFromUrl(Uri uri)` | Download from an `http`/`https` URL natively and load. Throws `PlatformException` on non-2xx response or decode failure. |
 | `play()` | Start looping playback. |
 | `pause()` | Pause; preserves position. |
 | `resume()` | Resume from paused position. |
@@ -454,6 +480,7 @@ All methods throw `StateError` if called after `dispose()`.
 |---------|-----|---------|
 | Loop player | `AVAudioPlayerNode.scheduleBuffer(.loops)` | `AudioTrack MODE_STREAM` |
 | Metronome | `AVAudioPlayerNode.scheduleBuffer(.loops)` on dedicated engine | `AudioTrack MODE_STATIC` + `setLoopPoints` |
+| URL loading | `URLSession.shared.dataTask` | `HttpURLConnection` on `Dispatchers.IO` |
 | Time pitch | `AVAudioUnitTimePitch` | `PlaybackParams.setSpeed` (API 23+) |
 | BPM detection | `DispatchWorkItem` on `.utility` queue | `Dispatchers.Default` coroutine |
 | Pan | `AVAudioMixerNode.pan` | Equal-power formula → `setStereoVolume` |
@@ -471,14 +498,14 @@ A 5 ms linear micro-fade is applied to both ends of every loop buffer at load ti
 
 ## Important notes
 
-- **Single instance per app.** The plugin uses a single shared `MethodChannel` per player type. Instantiating multiple `LoopAudioPlayer` objects causes cross-talk. Create one instance and reuse it. The same applies to `MetronomePlayer`.
+- **Multiple instances are supported.** You can create any number of `LoopAudioPlayer` or `MetronomePlayer` instances and they will run concurrently without cross-talk. Each instance is independently tracked by the native layer via a unique player ID.
 - **`LoopAudioPlayer` and `MetronomePlayer` are independent.** They use separate method and event channels and can run simultaneously without interfering with each other.
 - **Always call `dispose()`** when a player is no longer needed to release native resources.
 - All methods throw `PlatformException` if the native engine returns an error (e.g. file not found, unsupported format).
 - **Playback rate on Android** uses `PlaybackParams` (API 23+). On devices running Android 5 or 6, `setPlaybackRate` has no effect.
 - **Crossfade** must be shorter than half the loop region. Very short loop regions with a long crossfade may behave unexpectedly.
 - **Minimum iOS version:** 14.0 (required by `os.log.Logger`).
-- **`loadFromUrl`** requires `package:http`. Add `http: ^1.2.0` to your `pubspec.yaml`.
+- **`loadFromUrl`** uses the platform networking stack (`URLSession` on iOS, `HttpURLConnection` on Android). No additional packages are required.
 
 ## License
 

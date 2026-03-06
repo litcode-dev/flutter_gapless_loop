@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -47,6 +45,7 @@ void main() {
       expect(args['click'], stubBytes);
       expect(args['accent'], stubBytes);
       expect(args['extension'], 'wav');
+      expect(args['playerId'], startsWith('metro_'));
     });
 
     test('passes custom extension', () async {
@@ -108,7 +107,9 @@ void main() {
       final player = MetronomePlayer();
       await player.setBpm(140.0);
       expect(calls.first.method, 'setBpm');
-      expect((calls.first.arguments as Map)['bpm'], 140.0);
+      final args = calls.first.arguments as Map;
+      expect(args['bpm'], 140.0);
+      expect(args['playerId'], startsWith('metro_'));
     });
 
     test('throws ArgumentError for bpm <= 0', () {
@@ -125,7 +126,9 @@ void main() {
       final player = MetronomePlayer();
       await player.setBeatsPerBar(3);
       expect(calls.first.method, 'setBeatsPerBar');
-      expect((calls.first.arguments as Map)['beatsPerBar'], 3);
+      final args = calls.first.arguments as Map;
+      expect(args['beatsPerBar'], 3);
+      expect(args['playerId'], startsWith('metro_'));
     });
 
     test('throws ArgumentError for beatsPerBar < 1', () {

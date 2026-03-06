@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_gapless_loop/flutter_gapless_loop.dart';
@@ -39,8 +38,9 @@ void main() {
 
       expect(methodCalls, hasLength(1));
       expect(methodCalls.first.method, equals('load'));
-      final path = methodCalls.first.arguments['path'] as String;
-      expect(path, endsWith('.wav'));
+      final args = methodCalls.first.arguments as Map;
+      expect(args['path'] as String, endsWith('.wav'));
+      expect(args['playerId'], startsWith('loop_'));
     });
 
     test('uses custom extension when provided', () async {
@@ -80,14 +80,15 @@ void main() {
   });
 
   group('loadFromUrl', () {
-    test('invokes loadUrl with the URI string', () async {
+    test('invokes loadUrl with the URI string and playerId', () async {
       final player = LoopAudioPlayer();
       await player.loadFromUrl(Uri.parse('https://example.com/loop.wav'));
 
       expect(methodCalls, hasLength(1));
       expect(methodCalls.first.method, equals('loadUrl'));
-      expect(methodCalls.first.arguments['url'],
-          equals('https://example.com/loop.wav'));
+      final args = methodCalls.first.arguments as Map;
+      expect(args['url'], equals('https://example.com/loop.wav'));
+      expect(args['playerId'], startsWith('loop_'));
     });
 
     test('throws StateError when called after dispose', () async {
