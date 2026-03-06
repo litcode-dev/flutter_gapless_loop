@@ -43,19 +43,26 @@ private final class MetronomeMethodHandler: NSObject, FlutterPlugin {
 
 /// The Flutter plugin entry point for flutter_gapless_loop.
 ///
-/// Registers the method channel and event channel, instantiates [LoopAudioEngine],
-/// and routes all Flutter method calls to the engine.
+/// Registers the method channel and event channel, manages [LoopAudioEngine] instances
+/// keyed by player ID, and routes all Flutter method calls to the correct engine.
+///
+/// Multiple concurrent players are supported: each Dart [LoopAudioPlayer] instance
+/// includes a unique `playerId` in every method call, and all events are tagged with
+/// the same `playerId` so the Dart layer can filter them without cross-talk.
 public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     // MARK: - Private Properties
 
-    private var engine: LoopAudioEngine?
+    /// Registry of active loop engines keyed by player ID.
+    private var engines:    [String: LoopAudioEngine] = [:]
+    /// Registry of active metronome engines keyed by player ID.
+    private var metronomes: [String: MetronomeEngine] = [:]
+
     private var eventSink: FlutterEventSink?
     private var registrar: FlutterPluginRegistrar?
     private let logger = Logger(subsystem: "com.fluttergaplessloop", category: "Plugin")
 
     // Metronome
-    private var metronomeEngine: MetronomeEngine?
     private let metronomeStreamHandler = MetronomeStreamHandler()
     private let metronomeMethodHandler = MetronomeMethodHandler()
 
@@ -94,13 +101,12 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
     // MARK: - FlutterStreamHandler (loop player)
 
-    /// Called when the Dart event channel subscribes. Creates the engine.
+    /// Called when the Dart event channel subscribes.
     public func onListen(
         withArguments arguments: Any?,
         eventSink events: @escaping FlutterEventSink
     ) -> FlutterError? {
         eventSink = events
-        setupEngine()
         logger.info("Event channel opened")
         return nil
     }
@@ -112,36 +118,55 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         return nil
     }
 
-    // MARK: - Engine Setup
+    // MARK: - Engine Registry
 
-    /// Creates a fresh [LoopAudioEngine] and wires its callbacks to the event sink.
-    private func setupEngine() {
+    /// Returns the existing engine for [playerId], or creates a fresh one.
+    @discardableResult
+    private func getOrCreateEngine(for playerId: String) -> LoopAudioEngine {
+        if let eng = engines[playerId] { return eng }
         let eng = LoopAudioEngine()
+        wireEngineCallbacks(eng, playerId: playerId)
+        engines[playerId] = eng
+        logger.info("LoopAudioEngine created for playerId=\(playerId)")
+        return eng
+    }
 
+    /// Wires engine callbacks to the shared event sink, tagging each event with [playerId].
+    private func wireEngineCallbacks(_ eng: LoopAudioEngine, playerId: String) {
         eng.onStateChange = { [weak self] state in
-            // Dispatch to main — all Flutter event sink calls must be on main thread.
             DispatchQueue.main.async {
-                self?.eventSink?(["type": "stateChange", "state": state.rawValue])
+                self?.eventSink?([
+                    "playerId": playerId,
+                    "type":     "stateChange",
+                    "state":    state.rawValue
+                ])
             }
         }
 
         eng.onError = { [weak self] error in
             DispatchQueue.main.async {
-                self?.eventSink?(["type": "error", "message": error.localizedDescription])
+                self?.eventSink?([
+                    "playerId": playerId,
+                    "type":     "error",
+                    "message":  error.localizedDescription
+                ])
             }
         }
 
         eng.onRouteChange = { [weak self] reason in
             DispatchQueue.main.async {
-                self?.eventSink?(["type": "routeChange", "reason": reason])
+                self?.eventSink?([
+                    "playerId": playerId,
+                    "type":     "routeChange",
+                    "reason":   reason
+                ])
             }
         }
 
         eng.onBpmDetected = { [weak self] bpmResult in
-            // Already on main thread (LoopAudioEngine guarantees it), but
-            // async-to-main matches the pattern used by all other callbacks.
             DispatchQueue.main.async {
                 self?.eventSink?([
+                    "playerId":    playerId,
                     "type":        "bpmDetected",
                     "bpm":         bpmResult.bpm,
                     "confidence":  bpmResult.confidence,
@@ -151,29 +176,24 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 ])
             }
         }
-
-        engine = eng
-        logger.info("LoopAudioEngine created")
     }
 
     // MARK: - FlutterPlugin Method Channel (loop player)
 
-    /// Routes all Flutter method channel calls to [LoopAudioEngine].
+    /// Routes all Flutter method channel calls to the correct [LoopAudioEngine].
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        // Lazily create engine if the event channel was never opened (e.g. hot restart).
-        if engine == nil { setupEngine() }
-
-        guard let eng = engine else {
+        let args = call.arguments as? [String: Any]
+        guard let pid = args?["playerId"] as? String else {
             DispatchQueue.main.async { result(FlutterError(
-                code: "ENGINE_NOT_READY",
-                message: "Engine could not be initialized",
+                code: "INVALID_ARGS",
+                message: "'playerId' is required",
                 details: nil
             )) }
             return
         }
 
-        let args = call.arguments as? [String: Any]
-        logger.debug("Method call: \(call.method)")
+        let eng = getOrCreateEngine(for: pid)
+        logger.debug("Method call: \(call.method) pid=\(pid)")
 
         switch call.method {
 
@@ -204,7 +224,6 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'assetKey' is required", details: nil)) }
                 return
             }
-            // Resolve the asset key to an absolute path using the Flutter asset registry.
             guard let reg = registrar else {
                 DispatchQueue.main.async { result(FlutterError(code: "REGISTRAR_MISSING", message: "Plugin registrar unavailable", details: nil)) }
                 return
@@ -330,7 +349,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
         case "dispose":
             eng.dispose()
-            engine = nil
+            engines.removeValue(forKey: pid)
             DispatchQueue.main.async { result(nil) }
 
         // MARK: Load from remote URL
@@ -411,6 +430,10 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     /// Routes calls from the `"flutter_gapless_loop/metronome"` channel.
     func handleMetronomeCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let args = call.arguments as? [String: Any]
+        guard let pid = args?["playerId"] as? String else {
+            result(FlutterError(code: "INVALID_ARGS", message: "'playerId' is required", details: nil))
+            return
+        }
 
         switch call.method {
 
@@ -425,7 +448,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 return
             }
             let ext = args?["extension"] as? String ?? "wav"
-            getOrCreateMetronomeEngine().start(
+            getOrCreateMetronomeEngine(for: pid).start(
                 bpm: bpmVal,
                 beatsPerBar: beatsVal,
                 clickData: clickData.data,
@@ -439,7 +462,7 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 result(FlutterError(code: "INVALID_ARGS", message: "'bpm' required", details: nil))
                 return
             }
-            metronomeEngine?.setBpm(bpmVal)
+            metronomes[pid]?.setBpm(bpmVal)
             result(nil)
 
         case "setBeatsPerBar":
@@ -447,16 +470,16 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 result(FlutterError(code: "INVALID_ARGS", message: "'beatsPerBar' required", details: nil))
                 return
             }
-            metronomeEngine?.setBeatsPerBar(beatsVal)
+            metronomes[pid]?.setBeatsPerBar(beatsVal)
             result(nil)
 
         case "stop":
-            metronomeEngine?.stop()
+            metronomes[pid]?.stop()
             result(nil)
 
         case "dispose":
-            metronomeEngine?.dispose()
-            metronomeEngine = nil
+            metronomes[pid]?.dispose()
+            metronomes.removeValue(forKey: pid)
             result(nil)
 
         default:
@@ -465,16 +488,18 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     }
 
     @discardableResult
-    private func getOrCreateMetronomeEngine() -> MetronomeEngine {
-        if let eng = metronomeEngine { return eng }
+    private func getOrCreateMetronomeEngine(for playerId: String) -> MetronomeEngine {
+        if let eng = metronomes[playerId] { return eng }
         let eng = MetronomeEngine()
         eng.onBeatTick = { [weak self] beat in
-            self?.metronomeStreamHandler.eventSink?(["type": "beatTick", "beat": beat])
+            self?.metronomeStreamHandler.eventSink?(
+                ["playerId": playerId, "type": "beatTick", "beat": beat])
         }
         eng.onError = { [weak self] msg in
-            self?.metronomeStreamHandler.eventSink?(["type": "error", "message": msg])
+            self?.metronomeStreamHandler.eventSink?(
+                ["playerId": playerId, "type": "error", "message": msg])
         }
-        metronomeEngine = eng
+        metronomes[playerId] = eng
         return eng
     }
 }
