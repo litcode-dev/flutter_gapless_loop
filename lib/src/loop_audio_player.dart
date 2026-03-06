@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
@@ -46,9 +47,13 @@ class LoopAudioPlayer {
 
   bool _isDisposed = false;
 
+  double _localVolume = 1.0;
+  double _localPan    = 0.0;
+
   /// Creates a new [LoopAudioPlayer].
   LoopAudioPlayer() {
     _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
+    LoopAudioMaster._instances.add(this);
   }
 
   void _checkNotDisposed() {
@@ -204,13 +209,13 @@ class LoopAudioPlayer {
   }
 
   /// Sets the playback volume. Range: 0.0 (silent) to 1.0 (full volume).
+  ///
+  /// Values outside the range are clamped. The effective volume sent to native
+  /// is `localVolume × LoopAudioMaster.volume`.
   Future<void> setVolume(double volume) async {
     _checkNotDisposed();
-    if (volume < 0.0 || volume > 1.0) {
-      throw ArgumentError.value(volume, 'volume', 'must be between 0.0 and 1.0');
-    }
-    await _channel.invokeMethod<void>(
-        'setVolume', {'playerId': _playerId, 'volume': volume});
+    _localVolume = volume.clamp(0.0, 1.0);
+    await _applyEffectiveVolume();
   }
 
   /// Sets the stereo pan position.
@@ -220,14 +225,26 @@ class LoopAudioPlayer {
   /// - `0.0`  = centre (default)
   /// - `1.0`  = full right
   ///
-  /// Values outside the range are clamped to [-1.0, 1.0].
-  /// Takes effect immediately. Persists across loads.
-  ///
-  /// Throws [PlatformException] on native error.
+  /// Values outside the range are clamped. The effective pan sent to native
+  /// is `clamp(localPan + LoopAudioMaster.pan, −1.0, 1.0)`.
   Future<void> setPan(double pan) async {
     _checkNotDisposed();
+    _localPan = pan.clamp(-1.0, 1.0);
+    await _applyEffectivePan();
+  }
+
+  Future<void> _applyEffectiveVolume() async {
+    final effective =
+        (_localVolume * LoopAudioMaster._masterVolume).clamp(0.0, 1.0);
     await _channel.invokeMethod<void>(
-        'setPan', {'playerId': _playerId, 'pan': pan.clamp(-1.0, 1.0)});
+        'setVolume', {'playerId': _playerId, 'volume': effective});
+  }
+
+  Future<void> _applyEffectivePan() async {
+    final effective =
+        (_localPan + LoopAudioMaster._masterPan).clamp(-1.0, 1.0);
+    await _channel.invokeMethod<void>(
+        'setPan', {'playerId': _playerId, 'pan': effective});
   }
 
   /// Sets the playback rate (speed) while preserving pitch.
@@ -278,6 +295,7 @@ class LoopAudioPlayer {
   /// Releases all native resources. This instance cannot be used after calling dispose.
   Future<void> dispose() async {
     _isDisposed = true;
+    LoopAudioMaster._instances.remove(this);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
 
@@ -296,4 +314,69 @@ class LoopAudioPlayer {
         'categoryChange'      => RouteChangeReason.categoryChange,
         _                     => RouteChangeReason.unknown,
       };
+}
+
+/// A static group-bus controller for all live [LoopAudioPlayer] instances.
+///
+/// Volume is multiplicative: `effectiveVolume = localVolume × masterVolume`.
+/// Pan is additive (clamped): `effectivePan = clamp(localPan + masterPan, −1.0, 1.0)`.
+///
+/// ## Example
+/// ```dart
+/// final p1 = LoopAudioPlayer();
+/// final p2 = LoopAudioPlayer();
+/// await p1.setVolume(0.8);
+/// await p2.setVolume(0.6);
+/// await LoopAudioMaster.setVolume(0.5); // p1 → 0.4, p2 → 0.3
+/// ```
+class LoopAudioMaster {
+  LoopAudioMaster._();
+
+  static final Set<LoopAudioPlayer> _instances = {};
+  static double _masterVolume = 1.0;
+  static double _masterPan    = 0.0;
+
+  /// Current master volume (0.0–1.0). Default: `1.0`.
+  static double get volume => _masterVolume;
+
+  /// Current master pan (−1.0–1.0). Default: `0.0`.
+  static double get pan => _masterPan;
+
+  /// Scales all live [LoopAudioPlayer] instances multiplicatively.
+  ///
+  /// Each instance's effective volume becomes `localVolume × volume`.
+  static Future<void> setVolume(double volume) async {
+    _masterVolume = volume.clamp(0.0, 1.0);
+    for (final inst in _instances) {
+      if (!inst._isDisposed) await inst._applyEffectiveVolume();
+    }
+  }
+
+  /// Shifts all live [LoopAudioPlayer] pans by [pan] (additive, clamped to ±1.0).
+  static Future<void> setPan(double pan) async {
+    _masterPan = pan.clamp(-1.0, 1.0);
+    for (final inst in _instances) {
+      if (!inst._isDisposed) await inst._applyEffectivePan();
+    }
+  }
+
+  /// Resets master volume to 1.0 and pan to 0.0, then re-applies to all instances.
+  static Future<void> reset() async {
+    _masterVolume = 1.0;
+    _masterPan    = 0.0;
+    for (final inst in _instances) {
+      if (!inst._isDisposed) {
+        await inst._applyEffectiveVolume();
+        await inst._applyEffectivePan();
+      }
+    }
+  }
+
+  /// Resets master state for use in tests only.
+  @visibleForTesting
+  static void resetForTesting() {
+    _masterVolume = 1.0;
+    _masterPan    = 0.0;
+    _instances.clear();
+  }
 }
