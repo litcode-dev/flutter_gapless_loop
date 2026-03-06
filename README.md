@@ -417,8 +417,8 @@ All methods throw `StateError` if called after `dispose()`.
 | `stop()` | Stop and reset position. |
 | `setLoopRegion(double start, double end)` | Loop only the region between `start` and `end` (seconds). |
 | `setCrossfadeDuration(double seconds)` | Crossfade duration at loop boundary. `0.0` = disabled. |
-| `setVolume(double volume)` | Volume in `[0.0, 1.0]`. |
-| `setPan(double pan)` | Stereo pan in `[-1.0, 1.0]`. Values clamped. |
+| `setVolume(double volume)` | Instance volume in `[0.0, 1.0]`. Effective volume = `localVolume × LoopAudioMaster.volume`. Values clamped. |
+| `setPan(double pan)` | Instance pan in `[-1.0, 1.0]`. Effective pan = `clamp(localPan + LoopAudioMaster.pan, -1, 1)`. Values clamped. |
 | `setPlaybackRate(double rate)` | Speed multiplier in `[0.25, 4.0]`, pitch-preserving. |
 | `seek(double seconds)` | Seek to position in seconds. |
 | `duration` | `Future<Duration>` — total length of loaded file. |
@@ -428,6 +428,24 @@ All methods throw `StateError` if called after `dispose()`.
 | `routeChangeStream` | `Stream<RouteChangeEvent>` — audio route changes. |
 | `bpmStream` | `Stream<BpmResult>` — BPM + time signature analysis result after each load. |
 | `dispose()` | Release all native resources. Instance unusable after this. |
+
+### `LoopAudioMaster`
+
+`LoopAudioMaster` is a static class that applies master volume and pan across all live `LoopAudioPlayer` instances. Per-instance relative levels are preserved.
+
+```dart
+await LoopAudioMaster.setVolume(0.5); // all instances scaled by 0.5
+await LoopAudioMaster.setPan(0.2);    // all instances shifted right by 0.2
+await LoopAudioMaster.reset();        // restore volume=1.0, pan=0.0
+```
+
+| Member | Description |
+|--------|-------------|
+| `volume` | Current master volume getter (default `1.0`) |
+| `pan` | Current master pan getter (default `0.0`) |
+| `setVolume(double volume)` | Scales all live instances: `effectiveVolume = localVolume × masterVolume` |
+| `setPan(double pan)` | Shifts all live instances: `effectivePan = clamp(localPan + masterPan, -1, 1)` |
+| `reset()` | Restores `volume=1.0` / `pan=0.0` and re-applies to all instances |
 
 ### `MetronomePlayer`
 
