@@ -1,5 +1,5 @@
 
-## 0.0.5
+## 0.0.4
 
 ### New features
 
@@ -9,9 +9,7 @@
 
   The stream emits no events when playback is paused or stopped. Both iOS and Android compute RMS and peak in the native render thread and post events via the existing `EventChannel`.
 
-## 0.0.4
 
-### New features
 
 * **`LoopAudioMaster`.** A new static group-bus controller for all live `LoopAudioPlayer` instances. `setVolume` scales every instance multiplicatively (`effectiveVolume = localVolume × masterVolume`); `setPan` shifts every instance additively (`effectivePan = clamp(localPan + masterPan, −1, 1)`). `reset()` restores defaults and re-applies. Per-instance relative levels are preserved at the Dart layer — native engines receive only the final effective float.
 * **`MetronomeMaster`.** Same group-bus pattern for all live `MetronomePlayer` instances.
