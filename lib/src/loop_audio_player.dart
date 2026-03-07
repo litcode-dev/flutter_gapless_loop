@@ -98,6 +98,19 @@ class LoopAudioPlayer {
         .map((e) => BpmResult.fromMap(e));
   }
 
+  /// Stream of [AmplitudeEvent]s emitted ~20 times per second while playing.
+  ///
+  /// Each event carries the RMS and peak sample magnitude for the most recent
+  /// audio buffer rendered by the native engine. Both values are in [0.0, 1.0].
+  ///
+  /// The stream is silent (no events) when the player is paused or stopped.
+  Stream<AmplitudeEvent> get amplitudeStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'amplitude')
+        .map((e) => AmplitudeEvent.fromMap(e));
+  }
+
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
   /// The native layer resolves the asset key to an absolute path using the
   /// Flutter asset registry.

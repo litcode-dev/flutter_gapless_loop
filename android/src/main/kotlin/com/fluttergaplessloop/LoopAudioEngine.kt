@@ -113,6 +113,12 @@ class LoopAudioEngine(private val context: Context) {
     /** Invoked when BPM detection completes after a load. Always called on the main thread. */
     var onBpmDetected: ((BpmDetectionResult) -> Unit)? = null
 
+    /**
+     * Invoked with (rms, peak) amplitude in [0, 1] approximately 20 times per second
+     * while the engine is playing. Always called on the main thread.
+     */
+    var onAmplitude: ((Float, Float) -> Unit)? = null
+
     // ─── Public read-only state ───────────────────────────────────────────────
 
     private var _state: EngineState = EngineState.Idle
@@ -186,6 +192,9 @@ class LoopAudioEngine(private val context: Context) {
 
     /** Monotonically tracked playback frame position, updated by the write thread. */
     private val currentFrameAtomic = AtomicLong(0L)
+
+    /** Last time (ms) an amplitude event was dispatched. Throttles to ~20 Hz. */
+    @Volatile private var lastAmplitudeTimeMs: Long = 0
 
     private var writeThread: Thread? = null
     private var audioTrack: AudioTrack? = null
@@ -557,8 +566,9 @@ class LoopAudioEngine(private val context: Context) {
      * 7. Exits when [stopRequested] is true.
      */
     private fun startWriteThread() {
-        stopRequested  = false
-        pauseRequested = false
+        stopRequested      = false
+        pauseRequested     = false
+        lastAmplitudeTimeMs = 0
 
         writeThread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -640,6 +650,29 @@ class LoopAudioEngine(private val context: Context) {
                                 onError?.invoke(err)
                             }
                             break
+                        }
+
+                        // ── Amplitude measurement (~20 Hz) ─────────────────────
+                        val amplitudeCallback = onAmplitude
+                        if (amplitudeCallback != null) {
+                            val nowMs = System.currentTimeMillis()
+                            if (nowMs - lastAmplitudeTimeMs >= 50) {
+                                lastAmplitudeTimeMs = nowMs
+                                var sumSq = 0f
+                                var peak  = 0f
+                                for (i in 0 until writeIdx) {
+                                    val s = writeBuffer[i]
+                                    sumSq += s * s
+                                    val abs = if (s < 0f) -s else s
+                                    if (abs > peak) peak = abs
+                                }
+                                val rms = kotlin.math.sqrt(sumSq / writeIdx)
+                                val rmsC  = rms.coerceIn(0f, 1f)
+                                val peakC = peak.coerceIn(0f, 1f)
+                                engineScope.launch {
+                                    amplitudeCallback(rmsC, peakC)
+                                }
+                            }
                         }
                     }
                 }

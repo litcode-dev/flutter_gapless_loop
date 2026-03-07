@@ -1,4 +1,14 @@
 
+## 0.0.5
+
+### New features
+
+* **`LoopAudioPlayer.amplitudeStream`.** A new `Stream<AmplitudeEvent>` that emits real-time audio level data approximately 20 times per second while the player is in `PlayerState.playing`. Each `AmplitudeEvent` carries:
+  * `rms` — root-mean-square level of the most recent audio buffer rendered by the native engine, in `[0.0, 1.0]`. Smooth signal; well-suited for VU meters.
+  * `peak` — peak sample magnitude of the same buffer, in `[0.0, 1.0]`. Reacts faster than `rms`; use for peak-hold indicators.
+
+  The stream emits no events when playback is paused or stopped. Both iOS and Android compute RMS and peak in the native render thread and post events via the existing `EventChannel`.
+
 ## 0.0.4
 
 ### New features

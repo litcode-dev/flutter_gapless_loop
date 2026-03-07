@@ -9,6 +9,7 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioE
 - Optional crossfade between loop iterations (equal-power)
 - Automatic BPM/tempo detection after every load
 - Automatic time signature detection (beats per bar + bar timestamps)
+- Real-time amplitude metering via `amplitudeStream` (RMS + peak, ~20 Hz)
 - Load audio from an asset, a file path, raw bytes, or a URL
 - Built-in `MetronomePlayer` — sample-accurate click track with accent, runs simultaneously with the loop player
 - Per-instance volume and pan on both `LoopAudioPlayer` and `MetronomePlayer`
@@ -277,6 +278,31 @@ void setTargetBpm(double bpm) {
 }
 ```
 
+### Amplitude stream
+
+Subscribe to `amplitudeStream` to receive real-time audio level data while the player is playing. Events fire approximately 20 times per second. The stream is silent (no events) when playback is paused or stopped.
+
+```dart
+player.amplitudeStream.listen((AmplitudeEvent event) {
+  print('RMS: ${event.rms.toStringAsFixed(3)}');   // smooth level — good for VU meters
+  print('Peak: ${event.peak.toStringAsFixed(3)}'); // instantaneous peak — good for peak-hold
+});
+```
+
+Both `rms` and `peak` are in `[0.0, 1.0]` where `0.0` is silence and `1.0` is full scale.
+
+**VU meter widget example:**
+
+```dart
+StreamBuilder<AmplitudeEvent>(
+  stream: player.amplitudeStream,
+  builder: (context, snapshot) {
+    final level = snapshot.data?.rms ?? 0.0;
+    return LinearProgressIndicator(value: level);
+  },
+)
+```
+
 ### Time signature detection
 
 `BpmResult` also includes the detected time signature. This is emitted on the same `bpmStream` call, at no extra cost.
@@ -430,6 +456,7 @@ All methods throw `StateError` if called after `dispose()`.
 | `errorStream` | `Stream<String>` — error messages from native layer. |
 | `routeChangeStream` | `Stream<RouteChangeEvent>` — audio route changes. |
 | `bpmStream` | `Stream<BpmResult>` — BPM + time signature analysis result after each load. |
+| `amplitudeStream` | `Stream<AmplitudeEvent>` — RMS and peak amplitude at ~20 Hz while playing. |
 | `dispose()` | Release all native resources. Instance unusable after this. |
 
 ### `LoopAudioMaster`
@@ -502,6 +529,13 @@ await MetronomeMaster.reset();        // restore volume=1.0, pan=0.0
 | `beats` | `List<double>` | Beat timestamps in seconds from the start of the file. |
 | `beatsPerBar` | `int` | Detected beats per bar (time signature numerator). `0` if confidence < 0.3. |
 | `bars` | `List<double>` | Bar start timestamps in seconds. Empty if `beatsPerBar` is `0`. |
+
+### `AmplitudeEvent`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `rms` | `double` | Root-mean-square level of the current audio buffer. In `[0.0, 1.0]`. Smooth; good for VU meters. |
+| `peak` | `double` | Peak sample magnitude of the current audio buffer. In `[0.0, 1.0]`. Reacts faster than `rms`; good for peak-hold indicators. |
 
 ### `RouteChangeEvent` / `RouteChangeReason`
 
