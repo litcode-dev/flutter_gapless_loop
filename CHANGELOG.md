@@ -6,6 +6,11 @@
 * **macOS support.** Full implementation using `AVAudioEngine` + `AVAudioUnitTimePitch`, matching the iOS engine. Audio session is replaced by `AVAudioEngineConfigurationChange` notifications. Minimum macOS version: 11.0.
 * **Windows support.** Full implementation using XAudio2 2.9 (Windows 10+) + MediaFoundation decoding. All four playback modes (full/region × with/without crossfade) are supported. Beat-accurate metronome via XAudio2 + `std::chrono` timer. BPM/time-signature detection ported in C++. Audio device changes handled via `IMMNotificationClient`.
 
+### Bug fixes
+
+* **Hot-restart guard.** A `static bool _didClearAll` flag fires `clearAll` on the native engine map the first time a `LoopAudioPlayer` or `MetronomePlayer` is constructed after a Dart hot restart. This prevents stale native engines from a previous Dart generation leaking into the new session. All four native platforms (iOS, Android, macOS, Windows) handle the `clearAll` call on both the loop and metronome channels.
+* **GC-based dispose safety net.** `LoopAudioPlayer` and `MetronomePlayer` now register a `Finalizer<String>` that fires a native `dispose` call if the Dart object is garbage-collected without an explicit `dispose()`. Instances are tracked in a `Set<WeakReference<T>>` so they do not prevent collection. The `_forEachLive` helper in `LoopAudioMaster` / `MetronomeMaster` lazily removes stale weak references during group-bus operations.
+
 
 ### Performance improvements
 

@@ -1,6 +1,6 @@
 # flutter_gapless_loop
 
-A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioEngine) and Android (AudioTrack). Zero-gap, zero-click loop playback for music production apps, with BPM and time signature detection, a built-in sample-accurate metronome, pitch-preserving speed control, and stereo panning.
+A Flutter plugin for true sample-accurate gapless audio looping on iOS, Android, macOS, and Windows. Zero-gap, zero-click loop playback for music production apps, with BPM and time signature detection, a built-in sample-accurate metronome, pitch-preserving speed control, and stereo panning.
 
 ## Features
 
@@ -579,12 +579,13 @@ A 5 ms linear micro-fade is applied to both ends of every loop buffer at load ti
 
 - **Multiple instances are supported.** You can create any number of `LoopAudioPlayer` or `MetronomePlayer` instances and they will run concurrently without cross-talk. Each instance is independently tracked by the native layer via a unique player ID.
 - **`LoopAudioPlayer` and `MetronomePlayer` are independent.** They use separate method and event channels and can run simultaneously without interfering with each other.
-- **Always call `dispose()`** when a player is no longer needed to release native resources.
+- **Call `dispose()`** when a player is no longer needed to release native resources promptly. If `dispose()` is never called, a `Finalizer` will release native resources when the Dart object is garbage-collected, but explicit disposal is still recommended.
 - All methods throw `PlatformException` if the native engine returns an error (e.g. file not found, unsupported format).
 - **Playback rate on Android** uses `PlaybackParams` (API 23+). On devices running Android 5 or 6, `setPlaybackRate` has no effect.
 - **Crossfade** must be shorter than half the loop region. Very short loop regions with a long crossfade may behave unexpectedly.
 - **Minimum iOS version:** 14.0 (required by `os.log.Logger`).
-- **`loadFromUrl`** uses the platform networking stack (`URLSession` on iOS, `HttpURLConnection` on Android). No additional packages are required.
+- **Minimum macOS version:** 11.0 (required by `os.log.Logger`).
+- **`loadFromUrl`** uses the platform networking stack (`URLSession` on iOS/macOS, `HttpURLConnection` on Android, `URLDownloadToFileW` on Windows). No additional packages are required.
 
 ## License
 
