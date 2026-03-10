@@ -35,3 +35,5 @@ flutter:
         pluginClass: FlutterGaplessLoopPlugin
       macos:
         pluginClass: FlutterGaplessLoopPlugin
+      windows:
+        pluginClass: FlutterGaplessLoopPlugin

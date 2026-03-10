@@ -26,8 +26,10 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioE
 
 | Platform | Support | Engine |
 |----------|---------|--------|
-| iOS      | ✅      | AVAudioEngine + AVAudioUnitTimePitch |
+| iOS      | ✅      | AVAudioEngine + AVAudioUnitTimePitch (iOS 14.0+) |
 | Android  | ✅      | AudioTrack (API 21+) |
+| macOS    | ✅      | AVAudioEngine + AVAudioUnitTimePitch (macOS 11.0+) |
+| Windows  | ✅      | XAudio2 2.9 + MediaFoundation (Windows 10+) |
 
 ## Installation
 
@@ -551,15 +553,15 @@ await MetronomeMaster.reset();        // restore volume=1.0, pan=0.0
 
 ### Native engines
 
-| Feature | iOS | Android |
-|---------|-----|---------|
-| Loop player | `AVAudioPlayerNode.scheduleBuffer(.loops)` | `AudioTrack MODE_STREAM` |
-| Metronome | `AVAudioPlayerNode.scheduleBuffer(.loops)` on dedicated engine | `AudioTrack MODE_STATIC` + `setLoopPoints` |
-| Audio decode | `AVAudioFile` | `MediaCodec` async callback + pre-allocated PCM buffer |
-| URL loading | `URLSession.shared.dataTask` | `HttpURLConnection` on `Dispatchers.IO` |
-| Time pitch | `AVAudioUnitTimePitch` | `PlaybackParams.setSpeed` (API 23+) |
-| BPM detection | `DispatchWorkItem` on `.utility` queue | `Dispatchers.Default` coroutine |
-| Pan | `AVAudioMixerNode.pan` | Equal-power formula → `setStereoVolume` |
+| Feature | iOS / macOS | Android | Windows |
+|---------|-------------|---------|---------|
+| Loop player | `AVAudioPlayerNode.scheduleBuffer(.loops)` | `AudioTrack MODE_STREAM` | `IXAudio2SourceVoice` + `XAUDIO2_LOOP_INFINITE` |
+| Metronome | `AVAudioPlayerNode.scheduleBuffer(.loops)` on dedicated engine | `AudioTrack MODE_STATIC` + `setLoopPoints` | XAudio2 `XAUDIO2_LOOP_INFINITE` + `std::chrono` timer |
+| Audio decode | `AVAudioFile` | `MediaCodec` async callback + pre-allocated PCM buffer | `IMFSourceReader` (MediaFoundation) |
+| URL loading | `URLSession.shared.dataTask` | `HttpURLConnection` on `Dispatchers.IO` | `URLDownloadToFileW` (background thread) |
+| Time pitch | `AVAudioUnitTimePitch` | `PlaybackParams.setSpeed` (API 23+) | `SetFrequencyRatio` (speed + pitch) |
+| BPM detection | `DispatchWorkItem` on `.utility` queue | `Dispatchers.Default` coroutine | `std::thread` (detached) |
+| Pan | `AVAudioMixerNode.pan` | Equal-power formula → `setStereoVolume` | `SetOutputMatrix` (equal-power) |
 
 ### Click prevention
 
@@ -567,8 +569,9 @@ A 5 ms linear micro-fade is applied to both ends of every loop buffer at load ti
 
 ### Threading
 
-- **iOS:** All engine state mutations run on a dedicated serial `audioQueue` (`DispatchQueue`, `.userInteractive`). Flutter method results and event sink calls are dispatched back to `DispatchQueue.main`.
+- **iOS / macOS:** All engine state mutations run on a dedicated serial `audioQueue` (`DispatchQueue`, `.userInteractive`). Flutter method results and event sink calls are dispatched back to `DispatchQueue.main`.
 - **Android:** Coroutine scope uses `Dispatchers.Main + SupervisorJob()`. IO-bound work (file decode) suspends on `Dispatchers.IO`. All `EventChannel.EventSink` calls are posted through a `Handler(Looper.getMainLooper())`.
+- **Windows:** Engine callbacks from background threads are marshalled to the Flutter platform thread via `PostMessage` + a `TopLevelWindowProcDelegate` that drains a mutex-protected callback queue.
 
 ---
 

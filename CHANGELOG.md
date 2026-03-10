@@ -1,6 +1,12 @@
 
 ## 0.0.4
 
+### New platforms
+
+* **macOS support.** Full implementation using `AVAudioEngine` + `AVAudioUnitTimePitch`, matching the iOS engine. Audio session is replaced by `AVAudioEngineConfigurationChange` notifications. Minimum macOS version: 11.0.
+* **Windows support.** Full implementation using XAudio2 2.9 (Windows 10+) + MediaFoundation decoding. All four playback modes (full/region × with/without crossfade) are supported. Beat-accurate metronome via XAudio2 + `std::chrono` timer. BPM/time-signature detection ported in C++. Audio device changes handled via `IMMNotificationClient`.
+
+
 ### Performance improvements
 
 * **Android: async `MediaCodec` decode.** `AudioFileLoader` now uses `MediaCodec.Callback` (async mode) instead of a synchronous poll loop with a 10 ms dequeue timeout. Codec buffer callbacks fire immediately when the hardware is ready, eliminating hundreds of unnecessary spin cycles on longer files. Biggest win on files ≥ 10 seconds.
