@@ -33,3 +33,5 @@ flutter:
       android:
         package: com.fluttergaplessloop
         pluginClass: FlutterGaplessLoopPlugin
+      macos:
+        pluginClass: FlutterGaplessLoopPlugin
