@@ -446,6 +446,14 @@ void FlutterGaplessLoopPlugin::HandleLoopCall(
         engines_.erase(*pid);
         result->Success();
 
+    } else if (call.method_name() == "clearAll") {
+        // Evicts stale engines left by a hot restart (Dart statics reset; native map does not).
+        for (auto& [id, e] : engines_)    e->Dispose();
+        for (auto& [id, m] : metronomes_) m->Dispose();
+        engines_.clear();
+        metronomes_.clear();
+        result->Success();
+
     } else {
         result->NotImplemented();
     }
@@ -517,6 +525,11 @@ void FlutterGaplessLoopPlugin::HandleMetronomeCall(
     } else if (call.method_name() == "dispose") {
         auto it = metronomes_.find(*pid);
         if (it != metronomes_.end()) { it->second->Dispose(); metronomes_.erase(it); }
+        result->Success();
+
+    } else if (call.method_name() == "clearAll") {
+        for (auto& [id, m] : metronomes_) m->Dispose();
+        metronomes_.clear();
         result->Success();
 
     } else {

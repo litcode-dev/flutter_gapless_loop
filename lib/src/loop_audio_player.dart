@@ -6,15 +6,14 @@ import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
 
-/// A player for sample-accurate gapless audio looping on iOS and Android.
+/// A player for sample-accurate gapless audio looping on iOS, Android, macOS,
+/// and Windows.
 ///
-/// Uses [MethodChannel] for commands and [EventChannel] for state/error/route events.
+/// Uses [MethodChannel] for commands and [EventChannel] for state/error/route
+/// events.
 ///
-/// All methods and getters may throw [PlatformException] if the native engine
-/// returns an error.
-///
-/// Multiple [LoopAudioPlayer] instances can run concurrently without cross-talk —
-/// each instance is independently managed by the native layer.
+/// Multiple [LoopAudioPlayer] instances can run concurrently without cross-talk
+/// — each is independently managed by the native layer.
 ///
 /// Basic usage:
 /// ```dart
@@ -28,7 +27,7 @@ import 'loop_audio_state.dart';
 /// await player.dispose();
 /// ```
 class LoopAudioPlayer {
-  static const _channel = MethodChannel('flutter_gapless_loop');
+  static const _channel      = MethodChannel('flutter_gapless_loop');
   static const _eventChannel = EventChannel('flutter_gapless_loop/events');
 
   // Shared broadcast stream — one subscription for all instances, each filters
@@ -50,10 +49,35 @@ class LoopAudioPlayer {
   double _localVolume = 1.0;
   double _localPan    = 0.0;
 
+  // Stored so dispose() can remove the exact WeakReference object from the Set.
+  late final WeakReference<LoopAudioPlayer> _weakSelf;
+
+  // ── Hot-restart guard ──────────────────────────────────────────────────────
+  // Dart statics are reset on hot restart; the native engine map is not.
+  // Sending 'clearAll' on first construction removes any stale engines from the
+  // previous session without affecting a normal cold start (clears an empty map).
+  static bool _didClearAll = false;
+
+  // ── GC-based cleanup ───────────────────────────────────────────────────────
+  // Fires native 'dispose' if the player is GC'd without an explicit dispose().
+  // Requires _instances to use WeakReference so strong refs don't block GC.
+  static final Finalizer<String> _finalizer = Finalizer((playerId) {
+    _channel.invokeMethod<void>('dispose', {'playerId': playerId});
+  });
+
   /// Creates a new [LoopAudioPlayer].
   LoopAudioPlayer() {
-    _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
-    LoopAudioMaster._instances.add(this);
+    _weakSelf = WeakReference(this);
+    _events   = _sharedEvents.where((e) => e['playerId'] == _playerId);
+    LoopAudioMaster._instances.add(_weakSelf);
+    _finalizer.attach(this, _playerId, detach: this);
+
+    if (!_didClearAll) {
+      _didClearAll = true;
+      // Fire-and-forget: channel calls are serialised, so any subsequent call
+      // on this channel will execute after clearAll completes on the native side.
+      _channel.invokeMethod<void>('clearAll');
+    }
   }
 
   void _checkNotDisposed() {
@@ -112,10 +136,6 @@ class LoopAudioPlayer {
   }
 
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
-  /// The native layer resolves the asset key to an absolute path using the
-  /// Flutter asset registry.
-  ///
-  /// Throws [PlatformException] on native error.
   Future<void> load(String assetPath) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
@@ -123,42 +143,25 @@ class LoopAudioPlayer {
   }
 
   /// Loads an audio file from an absolute file system path.
-  ///
-  /// Throws [PlatformException] on native error.
   Future<void> loadFromFile(String filePath) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
         'load', {'playerId': _playerId, 'path': filePath});
   }
 
-  /// Loads audio from raw bytes already in memory (e.g. from `dart:io`, a
-  /// network response body, or generated audio data).
-  ///
-  /// The bytes are written to a temporary file with the given [extension] hint
-  /// (default `'wav'`), loaded via the native engine, then the temporary file
-  /// is deleted.
-  ///
-  /// Throws [PlatformException] on native decode or engine error.
+  /// Loads audio from raw bytes already in memory.
   Future<void> loadFromBytes(Uint8List bytes, {String extension = 'wav'}) async {
     _checkNotDisposed();
     await _loadFromBytesWithExtension(bytes, extension);
   }
 
   /// Loads audio from an HTTP or HTTPS [uri].
-  ///
-  /// The download is performed natively (URLSession on iOS,
-  /// HttpURLConnection on Android) — no Dart HTTP client is used.
-  /// The temporary file is deleted by the native layer after load.
-  ///
-  /// Throws [PlatformException] on download failure (non-2xx) or decode error.
   Future<void> loadFromUrl(Uri uri) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
         'loadUrl', {'playerId': _playerId, 'url': uri.toString()});
   }
 
-  /// Writes [bytes] to a temp file with the given [extension], calls
-  /// [loadFromFile], then deletes the temp file unconditionally.
   Future<void> _loadFromBytesWithExtension(
       Uint8List bytes, String extension) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -196,12 +199,7 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('stop', {'playerId': _playerId});
   }
 
-  /// Sets the loop region in seconds. Both [start] and [end] are inclusive.
-  ///
-  /// When set, only the audio between [start] and [end] will loop.
-  /// Activates Mode B or D on the native engine.
-  ///
-  /// Throws [PlatformException] on native error.
+  /// Sets the loop region in seconds.
   Future<void> setLoopRegion(double start, double end) async {
     _checkNotDisposed();
     if (start < 0) throw ArgumentError.value(start, 'start', 'must be >= 0');
@@ -210,11 +208,7 @@ class LoopAudioPlayer {
         'setLoopRegion', {'playerId': _playerId, 'start': start, 'end': end});
   }
 
-  /// Sets the crossfade duration in seconds.
-  ///
-  /// A value of `0.0` (the default) disables crossfade and uses the lowest-latency
-  /// `.loops` scheduling path (Mode A or B). Values greater than `0.0` activate
-  /// the dual-node crossfade system (Mode C or D).
+  /// Sets the crossfade duration in seconds. Pass `0.0` to disable.
   Future<void> setCrossfadeDuration(double seconds) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
@@ -222,24 +216,14 @@ class LoopAudioPlayer {
   }
 
   /// Sets the playback volume. Range: 0.0 (silent) to 1.0 (full volume).
-  ///
-  /// Values outside the range are clamped. The effective volume sent to native
-  /// is `localVolume × LoopAudioMaster.volume`.
+  /// Values outside the range are clamped. Effective volume = localVolume × master.
   Future<void> setVolume(double volume) async {
     _checkNotDisposed();
     _localVolume = volume.clamp(0.0, 1.0);
     await _applyEffectiveVolume();
   }
 
-  /// Sets the stereo pan position.
-  ///
-  /// [pan] is in [-1.0, 1.0]:
-  /// - `-1.0` = full left
-  /// - `0.0`  = centre (default)
-  /// - `1.0`  = full right
-  ///
-  /// Values outside the range are clamped. The effective pan sent to native
-  /// is `clamp(localPan + LoopAudioMaster.pan, −1.0, 1.0)`.
+  /// Sets the stereo pan position in [-1.0, 1.0]. Effective pan = localPan + master.
   Future<void> setPan(double pan) async {
     _checkNotDisposed();
     _localPan = pan.clamp(-1.0, 1.0);
@@ -260,17 +244,7 @@ class LoopAudioPlayer {
         'setPan', {'playerId': _playerId, 'pan': effective});
   }
 
-  /// Sets the playback rate (speed) while preserving pitch.
-  ///
-  /// [rate] is a multiplier relative to the original tempo:
-  /// - `1.0` = normal speed (default)
-  /// - `2.0` = double speed
-  /// - `0.5` = half speed
-  ///
-  /// Values outside [0.25, 4.0] are clamped.
-  /// Takes effect immediately. Persists across loads.
-  ///
-  /// Throws [PlatformException] on native error.
+  /// Sets the playback rate (speed) multiplier. Range clamped to [0.25, 4.0].
   Future<void> setPlaybackRate(double rate) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
@@ -278,12 +252,6 @@ class LoopAudioPlayer {
   }
 
   /// Seeks to [seconds] within the loaded file.
-  ///
-  /// Note: seeking during `.loops` mode causes a brief reschedule on the native
-  /// side. The next loop boundary will restart from the loop region start, not
-  /// the seek position.
-  ///
-  /// Throws [PlatformException] on native error.
   Future<void> seek(double seconds) async {
     _checkNotDisposed();
     await _channel.invokeMethod<void>(
@@ -305,10 +273,12 @@ class LoopAudioPlayer {
         'getCurrentPosition', {'playerId': _playerId}) ?? 0.0;
   }
 
-  /// Releases all native resources. This instance cannot be used after calling dispose.
+  /// Releases all native resources. This instance cannot be used after dispose.
   Future<void> dispose() async {
+    if (_isDisposed) return;
     _isDisposed = true;
-    LoopAudioMaster._instances.remove(this);
+    _finalizer.detach(this);
+    LoopAudioMaster._instances.remove(_weakSelf);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
 
@@ -345,7 +315,9 @@ class LoopAudioPlayer {
 class LoopAudioMaster {
   LoopAudioMaster._();
 
-  static final Set<LoopAudioPlayer> _instances = {};
+  // WeakReference so players can be GC'd (and their Finalizer fired) even when
+  // they haven't been explicitly disposed.
+  static final Set<WeakReference<LoopAudioPlayer>> _instances = {};
   static double _masterVolume = 1.0;
   static double _masterPan    = 0.0;
 
@@ -356,33 +328,37 @@ class LoopAudioMaster {
   static double get pan => _masterPan;
 
   /// Scales all live [LoopAudioPlayer] instances multiplicatively.
-  ///
-  /// Each instance's effective volume becomes `localVolume × volume`.
   static Future<void> setVolume(double volume) async {
     _masterVolume = volume.clamp(0.0, 1.0);
-    for (final inst in _instances) {
-      if (!inst._isDisposed) await inst._applyEffectiveVolume();
-    }
+    await _forEachLive((inst) => inst._applyEffectiveVolume());
   }
 
-  /// Shifts all live [LoopAudioPlayer] pans by [pan] (additive, clamped to ±1.0).
+  /// Shifts all live [LoopAudioPlayer] pans additively (clamped to ±1.0).
   static Future<void> setPan(double pan) async {
     _masterPan = pan.clamp(-1.0, 1.0);
-    for (final inst in _instances) {
-      if (!inst._isDisposed) await inst._applyEffectivePan();
-    }
+    await _forEachLive((inst) => inst._applyEffectivePan());
   }
 
   /// Resets master volume to 1.0 and pan to 0.0, then re-applies to all instances.
   static Future<void> reset() async {
     _masterVolume = 1.0;
     _masterPan    = 0.0;
-    for (final inst in _instances) {
-      if (!inst._isDisposed) {
-        await inst._applyEffectiveVolume();
-        await inst._applyEffectivePan();
-      }
+    await _forEachLive((inst) async {
+      await inst._applyEffectiveVolume();
+      await inst._applyEffectivePan();
+    });
+  }
+
+  // Iterates live (non-null, non-disposed) instances; removes stale weak refs.
+  static Future<void> _forEachLive(
+      Future<void> Function(LoopAudioPlayer) fn) async {
+    final stale = <WeakReference<LoopAudioPlayer>>[];
+    for (final ref in List.of(_instances)) {
+      final inst = ref.target;
+      if (inst == null) { stale.add(ref); continue; }
+      if (!inst._isDisposed) await fn(inst);
     }
+    _instances.removeAll(stale);
   }
 
   /// Resets master state for use in tests only.

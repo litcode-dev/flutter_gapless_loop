@@ -33,8 +33,6 @@ class MetronomePlayer {
   static const _eventChannel =
       EventChannel('flutter_gapless_loop/metronome/events');
 
-  // Shared broadcast stream — one subscription for all instances, each filters
-  // by its own playerId so beat ticks don't cross-talk.
   static final Stream<Map<Object?, Object?>> _sharedEvents = _eventChannel
       .receiveBroadcastStream()
       .cast<Map<Object?, Object?>>();
@@ -50,9 +48,26 @@ class MetronomePlayer {
   double _localVolume = 1.0;
   double _localPan    = 0.0;
 
+  late final WeakReference<MetronomePlayer> _weakSelf;
+
+  // ── Hot-restart guard ──────────────────────────────────────────────────────
+  static bool _didClearAll = false;
+
+  // ── GC-based cleanup ───────────────────────────────────────────────────────
+  static final Finalizer<String> _finalizer = Finalizer((playerId) {
+    _channel.invokeMethod<void>('dispose', {'playerId': playerId});
+  });
+
   MetronomePlayer() {
-    _events = _sharedEvents.where((e) => e['playerId'] == _playerId);
-    MetronomeMaster._instances.add(this);
+    _weakSelf = WeakReference(this);
+    _events   = _sharedEvents.where((e) => e['playerId'] == _playerId);
+    MetronomeMaster._instances.add(_weakSelf);
+    _finalizer.attach(this, _playerId, detach: this);
+
+    if (!_didClearAll) {
+      _didClearAll = true;
+      _channel.invokeMethod<void>('clearAll');
+    }
   }
 
   void _checkNotDisposed() {
@@ -97,8 +112,6 @@ class MetronomePlayer {
   }
 
   /// Updates tempo without stopping. Regenerates the bar buffer.
-  ///
-  /// [bpm] must be in (0, 400].
   Future<void> setBpm(double bpm) async {
     _checkNotDisposed();
     if (bpm <= 0 || bpm > 400) {
@@ -108,8 +121,6 @@ class MetronomePlayer {
   }
 
   /// Updates time signature without stopping. Regenerates the bar buffer.
-  ///
-  /// [beatsPerBar] must be in [1, 16].
   Future<void> setBeatsPerBar(int beatsPerBar) async {
     _checkNotDisposed();
     if (beatsPerBar < 1 || beatsPerBar > 16) {
@@ -121,8 +132,6 @@ class MetronomePlayer {
   }
 
   /// Beat index emitted on each click: 0 = downbeat, 1…N-1 = regular beats.
-  ///
-  /// UI hint only — not used for audio scheduling (±5 ms jitter acceptable).
   Stream<int> get beatStream {
     _checkNotDisposed();
     return _events
@@ -130,19 +139,14 @@ class MetronomePlayer {
         .map((e) => e['beat'] as int? ?? 0);
   }
 
-  /// Sets this instance's volume (0.0–1.0).
-  ///
-  /// The effective volume sent to native is `localVolume × MetronomeMaster.volume`.
+  /// Sets this instance's volume (0.0–1.0). Effective = localVolume × master.
   Future<void> setVolume(double volume) async {
     _checkNotDisposed();
     _localVolume = volume.clamp(0.0, 1.0);
     await _applyEffectiveVolume();
   }
 
-  /// Sets this instance's stereo pan position (−1.0 to 1.0).
-  ///
-  /// The effective pan sent to native is
-  /// `clamp(localPan + MetronomeMaster.pan, −1.0, 1.0)`.
+  /// Sets this instance's stereo pan (−1.0 to 1.0). Effective = localPan + master.
   Future<void> setPan(double pan) async {
     _checkNotDisposed();
     _localPan = pan.clamp(-1.0, 1.0);
@@ -165,8 +169,10 @@ class MetronomePlayer {
 
   /// Releases all native resources. This instance cannot be used after dispose.
   Future<void> dispose() async {
+    if (_isDisposed) return;
     _isDisposed = true;
-    MetronomeMaster._instances.remove(this);
+    _finalizer.detach(this);
+    MetronomeMaster._instances.remove(_weakSelf);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
 }
@@ -187,7 +193,7 @@ class MetronomePlayer {
 class MetronomeMaster {
   MetronomeMaster._();
 
-  static final Set<MetronomePlayer> _instances = {};
+  static final Set<WeakReference<MetronomePlayer>> _instances = {};
   static double _masterVolume = 1.0;
   static double _masterPan    = 0.0;
 
@@ -198,33 +204,36 @@ class MetronomeMaster {
   static double get pan => _masterPan;
 
   /// Scales all live [MetronomePlayer] instances multiplicatively.
-  ///
-  /// Each instance's effective volume becomes `localVolume × volume`.
   static Future<void> setVolume(double volume) async {
     _masterVolume = volume.clamp(0.0, 1.0);
-    for (final inst in _instances) {
-      if (!inst._isDisposed) await inst._applyEffectiveVolume();
-    }
+    await _forEachLive((inst) => inst._applyEffectiveVolume());
   }
 
-  /// Shifts all live [MetronomePlayer] pans by [pan] (additive, clamped to ±1.0).
+  /// Shifts all live [MetronomePlayer] pans additively (clamped to ±1.0).
   static Future<void> setPan(double pan) async {
     _masterPan = pan.clamp(-1.0, 1.0);
-    for (final inst in _instances) {
-      if (!inst._isDisposed) await inst._applyEffectivePan();
-    }
+    await _forEachLive((inst) => inst._applyEffectivePan());
   }
 
   /// Resets master volume to 1.0 and pan to 0.0, then re-applies to all instances.
   static Future<void> reset() async {
     _masterVolume = 1.0;
     _masterPan    = 0.0;
-    for (final inst in _instances) {
-      if (!inst._isDisposed) {
-        await inst._applyEffectiveVolume();
-        await inst._applyEffectivePan();
-      }
+    await _forEachLive((inst) async {
+      await inst._applyEffectiveVolume();
+      await inst._applyEffectivePan();
+    });
+  }
+
+  static Future<void> _forEachLive(
+      Future<void> Function(MetronomePlayer) fn) async {
+    final stale = <WeakReference<MetronomePlayer>>[];
+    for (final ref in List.of(_instances)) {
+      final inst = ref.target;
+      if (inst == null) { stale.add(ref); continue; }
+      if (!inst._isDisposed) await fn(inst);
     }
+    _instances.removeAll(stale);
   }
 
   /// Resets master state for use in tests only.

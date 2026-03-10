@@ -286,6 +286,16 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            // Clears all engines and metronomes — called on first Dart construction
+            // to evict stale entries left by a hot restart.
+            "clearAll" -> {
+                engines.values.forEach    { it.dispose() }
+                engines.clear()
+                metronomes.values.forEach { it.dispose() }
+                metronomes.clear()
+                result.success(null)
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -413,6 +423,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             "dispose" -> {
                 metronomes[playerId]?.dispose()
                 metronomes.remove(playerId)
+                result.success(null)
+            }
+
+            "clearAll" -> {
+                metronomes.values.forEach { it.dispose() }
+                metronomes.clear()
                 result.success(null)
             }
 

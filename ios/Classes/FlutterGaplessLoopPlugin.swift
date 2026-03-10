@@ -362,6 +362,15 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             engines.removeValue(forKey: pid)
             DispatchQueue.main.async { result(nil) }
 
+        // MARK: Clear all engines and metronomes (called on first Dart construction
+        //       to evict stale entries left by a hot restart).
+        case "clearAll":
+            engines.values.forEach    { $0.dispose() }
+            engines.removeAll()
+            metronomes.values.forEach { $0.dispose() }
+            metronomes.removeAll()
+            DispatchQueue.main.async { result(nil) }
+
         // MARK: Load from remote URL
         case "loadUrl":
             guard let urlString = args?["url"] as? String,
@@ -506,6 +515,11 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         case "dispose":
             metronomes[pid]?.dispose()
             metronomes.removeValue(forKey: pid)
+            result(nil)
+
+        case "clearAll":
+            metronomes.values.forEach { $0.dispose() }
+            metronomes.removeAll()
             result(nil)
 
         default:
