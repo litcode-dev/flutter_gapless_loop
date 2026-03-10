@@ -1,6 +1,11 @@
 
 ## 0.0.4
 
+### Performance improvements
+
+* **Android: async `MediaCodec` decode.** `AudioFileLoader` now uses `MediaCodec.Callback` (async mode) instead of a synchronous poll loop with a 10 ms dequeue timeout. Codec buffer callbacks fire immediately when the hardware is ready, eliminating hundreds of unnecessary spin cycles on longer files. Biggest win on files ≥ 10 seconds.
+* **Android: pre-allocated PCM buffer.** The decoded PCM output is now pre-allocated from the track duration estimate (+ 10% headroom for encoder padding) and written into directly, replacing the previous `ArrayList<FloatArray>` collect-then-copy pattern. This cuts peak memory usage and eliminates one full-size `FloatArray` copy per load.
+
 ### New features
 
 * **`LoopAudioPlayer.amplitudeStream`.** A new `Stream<AmplitudeEvent>` that emits real-time audio level data approximately 20 times per second while the player is in `PlayerState.playing`. Each `AmplitudeEvent` carries:
@@ -8,8 +13,6 @@
   * `peak` — peak sample magnitude of the same buffer, in `[0.0, 1.0]`. Reacts faster than `rms`; use for peak-hold indicators.
 
   The stream emits no events when playback is paused or stopped. Both iOS and Android compute RMS and peak in the native render thread and post events via the existing `EventChannel`.
-
-
 
 * **`LoopAudioMaster`.** A new static group-bus controller for all live `LoopAudioPlayer` instances. `setVolume` scales every instance multiplicatively (`effectiveVolume = localVolume × masterVolume`); `setPan` shifts every instance additively (`effectivePan = clamp(localPan + masterPan, −1, 1)`). `reset()` restores defaults and re-applies. Per-instance relative levels are preserved at the Dart layer — native engines receive only the final effective float.
 * **`MetronomeMaster`.** Same group-bus pattern for all live `MetronomePlayer` instances.

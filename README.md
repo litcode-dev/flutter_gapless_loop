@@ -35,7 +35,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.2
+  flutter_gapless_loop: ^0.0.4
 ```
 
 Then run:
@@ -141,7 +141,7 @@ await player.stop();    // stop and reset position
 await player.setVolume(0.8); // 0.0 (silent) → 1.0 (full volume)
 ```
 
-Throws `ArgumentError` if the value is outside `[0.0, 1.0]`.
+Values outside `[0.0, 1.0]` are silently clamped.
 
 ### Stereo pan
 
@@ -555,6 +555,7 @@ await MetronomeMaster.reset();        // restore volume=1.0, pan=0.0
 |---------|-----|---------|
 | Loop player | `AVAudioPlayerNode.scheduleBuffer(.loops)` | `AudioTrack MODE_STREAM` |
 | Metronome | `AVAudioPlayerNode.scheduleBuffer(.loops)` on dedicated engine | `AudioTrack MODE_STATIC` + `setLoopPoints` |
+| Audio decode | `AVAudioFile` | `MediaCodec` async callback + pre-allocated PCM buffer |
 | URL loading | `URLSession.shared.dataTask` | `HttpURLConnection` on `Dispatchers.IO` |
 | Time pitch | `AVAudioUnitTimePitch` | `PlaybackParams.setSpeed` (API 23+) |
 | BPM detection | `DispatchWorkItem` on `.utility` queue | `Dispatchers.Default` coroutine |

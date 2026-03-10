@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,9 +29,6 @@ import java.nio.ByteOrder
 object AudioFileLoader {
 
     private const val TAG = "AudioFileLoader"
-
-    /** Codec dequeue timeout in microseconds (10 ms). */
-    private const val CODEC_TIMEOUT_US = 10_000L
 
     /**
      * Decoded audio data plus metadata needed to configure [AudioTrack] and the write thread.
@@ -140,18 +138,21 @@ object AudioFileLoader {
     // ─── Private helpers ────────────────────────────────────────────────────
 
     /**
-     * Core decode loop shared by [decode] and [decodeAsset].
+     * Core decode implementation shared by [decode] and [decodeAsset].
      *
-     * Feeds encoded data from [extractor] through MediaCodec input buffers and
-     * collects decoded PCM from output buffers until END_OF_STREAM is signalled.
+     * Uses [MediaCodec] in async callback mode so codec buffer callbacks fire
+     * immediately instead of being gated by a polling timeout. A pre-allocated
+     * [FloatArray] (sized from the track duration estimate + 10% headroom) is
+     * grown with a 1.25× reallocation factor if needed, eliminating the
+     * intermediate ArrayList<FloatArray> and the final concat copy.
      *
-     * Codec state machine:
-     *   configure() → start() → [dequeueInputBuffer / queueInputBuffer loop] →
-     *   [dequeueOutputBuffer loop] → EOS → stop() → release()
+     * MediaCodec guarantees that [MediaCodec.Callback] methods are serialized,
+     * so the mutable state (pcm, totalSamples, outputFormat) needs no external
+     * synchronization.
      *
      * @throws LoopAudioException on any codec failure.
      */
-    private fun decodeFromExtractor(
+    private suspend fun decodeFromExtractor(
         extractor: MediaExtractor,
         onProgress: ((Float) -> Unit)?
     ): DecodedAudio {
@@ -161,95 +162,81 @@ object AudioFileLoader {
             )
         extractor.selectTrack(trackIndex)
 
-        val format      = extractor.getTrackFormat(trackIndex)
-        val mime        = format.getString(MediaFormat.KEY_MIME)
+        val format       = extractor.getTrackFormat(trackIndex)
+        val mime         = format.getString(MediaFormat.KEY_MIME)
             ?: throw LoopAudioException(LoopEngineError.UnsupportedFormat("null MIME type"))
-        val sampleRate  = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        val sampleRate   = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
         val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
 
         val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION))
             format.getLong(MediaFormat.KEY_DURATION) else 0L
-        val estFrames = ((durationUs / 1_000_000.0) * sampleRate).toInt().coerceAtLeast(1)
+        val estFrames  = ((durationUs / 1_000_000.0) * sampleRate).toInt().coerceAtLeast(1)
 
         Log.i(TAG, "Decoding: mime=$mime rate=$sampleRate ch=$channelCount ~$estFrames frames")
 
-        val codec = MediaCodec.createDecoderByType(mime)
+        // Pre-allocate with 10% headroom for encoder padding/priming frames.
+        var pcm          = FloatArray((estFrames * channelCount * 1.1).toInt())
+        var totalSamples = 0
+        var outputFormat = format
+
+        val deferred = CompletableDeferred<DecodedAudio>()
+        val codec    = MediaCodec.createDecoderByType(mime)
+
+        codec.setCallback(object : MediaCodec.Callback() {
+            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                val inBuf = codec.getInputBuffer(index) ?: return
+                val sampleSize = extractor.readSampleData(inBuf, 0)
+                if (sampleSize < 0) {
+                    codec.queueInputBuffer(index, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                } else {
+                    codec.queueInputBuffer(index, 0, sampleSize, extractor.sampleTime, 0)
+                    extractor.advance()
+                }
+            }
+
+            override fun onOutputBufferAvailable(
+                codec: MediaCodec,
+                index: Int,
+                info: MediaCodec.BufferInfo
+            ) {
+                val outBuf = codec.getOutputBuffer(index)
+                if (outBuf != null && info.size > 0) {
+                    // Worst-case sample count: info.size / 2 (16-bit shorts)
+                    val needed = totalSamples + info.size / 2
+                    if (needed > pcm.size) {
+                        pcm = pcm.copyOf((needed * 1.25).toInt())
+                    }
+                    totalSamples += extractFloatChunkInto(outBuf, info, outputFormat, pcm, totalSamples)
+                    if (durationUs > 0 && onProgress != null) {
+                        onProgress((totalSamples / channelCount).toFloat() / estFrames.toFloat())
+                    }
+                }
+                codec.releaseOutputBuffer(index, false)
+                if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                    val finalPcm    = if (totalSamples == pcm.size) pcm else pcm.copyOf(totalSamples)
+                    val totalFrames = totalSamples / channelCount
+                    Log.i(TAG, "Decode complete: $totalFrames frames, ${sampleRate}Hz, ${channelCount}ch")
+                    deferred.complete(DecodedAudio(finalPcm, sampleRate, channelCount, totalFrames))
+                }
+            }
+
+            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                deferred.completeExceptionally(
+                    LoopAudioException(LoopEngineError.DecodeFailed(e.message ?: "codec error"))
+                )
+            }
+
+            override fun onOutputFormatChanged(codec: MediaCodec, newFormat: MediaFormat) {
+                outputFormat = newFormat
+                Log.d(TAG, "Output format changed: $newFormat")
+            }
+        })
+
+        codec.configure(format, null, null, 0)
+        codec.start()
+
         try {
-            codec.configure(format, null, null, 0)
-            codec.start()
-
-            val chunks       = ArrayList<FloatArray>(estFrames / 2048 + 1)
-            var totalSamples = 0
-            val bufInfo      = MediaCodec.BufferInfo()
-            var inputDone    = false
-            var outputDone   = false
-            var outputFormat = codec.outputFormat
-
-            while (!outputDone) {
-                // ── Feed compressed data into the codec ───────────────────────
-                if (!inputDone) {
-                    val inIdx = codec.dequeueInputBuffer(CODEC_TIMEOUT_US)
-                    if (inIdx >= 0) {
-                        val inBuf = codec.getInputBuffer(inIdx)
-                            ?: throw LoopAudioException(
-                                LoopEngineError.DecodeFailed("Null input buffer at $inIdx")
-                            )
-                        val sampleSize = extractor.readSampleData(inBuf, 0)
-                        if (sampleSize < 0) {
-                            codec.queueInputBuffer(
-                                inIdx, 0, 0, 0L,
-                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                            )
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(
-                                inIdx, 0, sampleSize, extractor.sampleTime, 0
-                            )
-                            extractor.advance()
-                        }
-                    }
-                }
-
-                // ── Collect decoded PCM from output ───────────────────────────
-                val outIdx = codec.dequeueOutputBuffer(bufInfo, CODEC_TIMEOUT_US)
-                when {
-                    outIdx >= 0 -> {
-                        val outBuf = codec.getOutputBuffer(outIdx)
-                        if (outBuf != null && bufInfo.size > 0) {
-                            val chunk = extractFloatChunk(outBuf, bufInfo, outputFormat)
-                            chunks.add(chunk)
-                            totalSamples += chunk.size
-                            if (durationUs > 0 && onProgress != null) {
-                                onProgress(
-                                    (totalSamples / channelCount).toFloat() / estFrames.toFloat()
-                                )
-                            }
-                        }
-                        codec.releaseOutputBuffer(outIdx, false)
-                        if (bufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            outputDone = true
-                        }
-                    }
-                    outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        outputFormat = codec.outputFormat
-                        Log.d(TAG, "Output format changed: $outputFormat")
-                    }
-                    // INFO_TRY_AGAIN_LATER: loop again
-                }
-            }
-
-            // Concatenate all chunks into one contiguous FloatArray
-            val pcm = FloatArray(totalSamples)
-            var offset = 0
-            for (chunk in chunks) {
-                chunk.copyInto(pcm, offset)
-                offset += chunk.size
-            }
-
-            val totalFrames = totalSamples / channelCount
-            Log.i(TAG, "Decode complete: $totalFrames frames, ${sampleRate}Hz, ${channelCount}ch")
-            return DecodedAudio(pcm, sampleRate, channelCount, totalFrames)
-
+            return deferred.await()
         } finally {
             try { codec.stop()    } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
@@ -266,16 +253,19 @@ object AudioFileLoader {
     }
 
     /**
-     * Extracts samples from [outBuf] and normalizes to Float [-1.0, 1.0].
+     * Extracts samples from [outBuf] and writes normalized floats [-1.0, 1.0] directly
+     * into [dest] starting at [offset]. Returns the number of samples written.
      *
      * Handles PCM_16BIT (most common) and PCM_FLOAT codec output.
      * Encoding is detected from [format]'s KEY_PCM_ENCODING, defaulting to PCM_16BIT.
      */
-    private fun extractFloatChunk(
+    private fun extractFloatChunkInto(
         outBuf: ByteBuffer,
         bufInfo: MediaCodec.BufferInfo,
-        format: MediaFormat
-    ): FloatArray {
+        format: MediaFormat,
+        dest: FloatArray,
+        offset: Int
+    ): Int {
         outBuf.position(bufInfo.offset)
         outBuf.limit(bufInfo.offset + bufInfo.size)
 
@@ -286,13 +276,19 @@ object AudioFileLoader {
 
         return when (encoding) {
             AudioFormat.ENCODING_PCM_FLOAT -> {
-                val buf = outBuf.order(ByteOrder.nativeOrder()).asFloatBuffer()
-                FloatArray(buf.remaining()).also { arr -> buf.get(arr) }
+                val buf   = outBuf.order(ByteOrder.nativeOrder()).asFloatBuffer()
+                val count = buf.remaining()
+                buf.get(dest, offset, count)
+                count
             }
             else -> {
                 // PCM_16BIT: normalize by dividing by 32768 to get [-1.0, 1.0]
-                val buf = outBuf.order(ByteOrder.nativeOrder()).asShortBuffer()
-                FloatArray(buf.remaining()) { buf.get() / 32768.0f }
+                val buf   = outBuf.order(ByteOrder.nativeOrder()).asShortBuffer()
+                val count = buf.remaining()
+                for (i in 0 until count) {
+                    dest[offset + i] = buf.get() / 32768.0f
+                }
+                count
             }
         }
     }
