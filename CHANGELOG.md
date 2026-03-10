@@ -11,7 +11,6 @@
 * **Hot-restart guard.** A `static bool _didClearAll` flag fires `clearAll` on the native engine map the first time a `LoopAudioPlayer` or `MetronomePlayer` is constructed after a Dart hot restart. This prevents stale native engines from a previous Dart generation leaking into the new session. All four native platforms (iOS, Android, macOS, Windows) handle the `clearAll` call on both the loop and metronome channels.
 * **GC-based dispose safety net.** `LoopAudioPlayer` and `MetronomePlayer` now register a `Finalizer<String>` that fires a native `dispose` call if the Dart object is garbage-collected without an explicit `dispose()`. Instances are tracked in a `Set<WeakReference<T>>` so they do not prevent collection. The `_forEachLive` helper in `LoopAudioMaster` / `MetronomeMaster` lazily removes stale weak references during group-bus operations.
 
-
 ### Performance improvements
 
 * **Android: async `MediaCodec` decode.** `AudioFileLoader` now uses `MediaCodec.Callback` (async mode) instead of a synchronous poll loop with a 10 ms dequeue timeout. Codec buffer callbacks fire immediately when the hardware is ready, eliminating hundreds of unnecessary spin cycles on longer files. Biggest win on files ≥ 10 seconds.
