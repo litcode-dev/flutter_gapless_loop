@@ -1,4 +1,10 @@
 
+## 0.0.6
+
+### Bug fixes
+
+* **Multi-engine `AVAudioSession` conflict (iOS).** When two `LoopAudioPlayer` instances are used concurrently (e.g. a drone pad and a loop player), every `loadFile` call on a new engine previously re-ran `AVAudioSession.setCategory(.playback) + setActive(true)` on the shared session. Reconfiguring the shared `AVAudioSession` while another `AVAudioEngine` is actively running triggers an `AVAudioEngineConfigurationChange` notification that invalidates the running engine, causing the second player's `engine.start()` to fail. Fixed by guarding `setCategory`/`setActive` behind a `private static var sessionConfigured` flag — the session is configured exactly once per process lifetime, regardless of how many engines are created. Each engine instance still registers its own `interruptionNotification` and `routeChangeNotification` observers independently. The static flag is reset in `detachFromEngine(for:)` so a hot restart correctly reconfigures the session for the next engine lifecycle.
+
 ## 0.0.5
 
 ### Bug fixes
