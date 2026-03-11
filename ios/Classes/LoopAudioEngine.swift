@@ -146,6 +146,11 @@ public class LoopAudioEngine {
     /// Tracks whether the engine graph has been built. Prevents duplicate attach/connect calls.
     private var isGraphConfigured = false
 
+    /// Guards the one-time AVAudioSession setCategory/setActive call across all engine instances.
+    /// Shared AVAudioSession must only be configured once — reconfiguring while another engine is
+    /// running can trigger AVAudioEngineConfigurationChange and invalidate in-flight engines.
+    private static var sessionConfigured = false
+
     // MARK: - Private: Amplitude Tap
 
     /// Whether an AVAudioEngine tap is currently installed on the main mixer output.
@@ -785,8 +790,15 @@ public class LoopAudioEngine {
 
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default)
-        try session.setActive(true)
+
+        // setCategory/setActive run once across all engine instances.
+        // Calling them while another AVAudioEngine is running can trigger
+        // AVAudioEngineConfigurationChange, which invalidates all in-flight engines.
+        if !LoopAudioEngine.sessionConfigured {
+            LoopAudioEngine.sessionConfigured = true
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+        }
 
         NotificationCenter.default.addObserver(
             self,

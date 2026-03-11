@@ -99,6 +99,19 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         metronomeEventChannel.setStreamHandler(instance.metronomeStreamHandler)
     }
 
+    // MARK: - FlutterPlugin Lifecycle
+
+    /// Called when the engine detaches (hot-restart). Resets the one-time session-configuration
+    /// guard so the next engine instance can reconfigure AVAudioSession cleanly.
+    public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+        engines.values.forEach    { $0.dispose() }
+        engines.removeAll()
+        metronomes.values.forEach { $0.dispose() }
+        metronomes.removeAll()
+        LoopAudioEngine.sessionConfigured = false
+        logger.info("Plugin detached — session config flag reset")
+    }
+
     // MARK: - FlutterStreamHandler (loop player)
 
     /// Called when the Dart event channel subscribes.
