@@ -37,7 +37,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.4
+  flutter_gapless_loop: ^0.0.5
 ```
 
 Then run:

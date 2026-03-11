@@ -182,6 +182,16 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // MARK: - FlutterPlugin Method Channel (loop player)
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        // clearAll has no playerId — handle before the per-player routing
+        if call.method == "clearAll" {
+            engines.values.forEach    { $0.dispose() }
+            engines.removeAll()
+            metronomes.values.forEach { $0.dispose() }
+            metronomes.removeAll()
+            DispatchQueue.main.async { result(nil) }
+            return
+        }
+
         let args = call.arguments as? [String: Any]
         guard let pid = args?["playerId"] as? String else {
             DispatchQueue.main.async { result(FlutterError(
@@ -352,13 +362,6 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             engines.removeValue(forKey: pid)
             DispatchQueue.main.async { result(nil) }
 
-        case "clearAll":
-            engines.values.forEach    { $0.dispose() }
-            engines.removeAll()
-            metronomes.values.forEach { $0.dispose() }
-            metronomes.removeAll()
-            DispatchQueue.main.async { result(nil) }
-
         // MARK: Load from remote URL
         case "loadUrl":
             guard let urlString = args?["url"] as? String,
@@ -435,6 +438,14 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // MARK: - Metronome Method Handler
 
     func handleMetronomeCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        // clearAll has no playerId — handle before the per-player routing
+        if call.method == "clearAll" {
+            metronomes.values.forEach { $0.dispose() }
+            metronomes.removeAll()
+            result(nil)
+            return
+        }
+
         let args = call.arguments as? [String: Any]
         guard let pid = args?["playerId"] as? String else {
             result(FlutterError(code: "INVALID_ARGS", message: "'playerId' is required", details: nil))
@@ -502,11 +513,6 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         case "dispose":
             metronomes[pid]?.dispose()
             metronomes.removeValue(forKey: pid)
-            result(nil)
-
-        case "clearAll":
-            metronomes.values.forEach { $0.dispose() }
-            metronomes.removeAll()
             result(nil)
 
         default:

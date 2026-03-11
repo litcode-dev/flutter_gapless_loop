@@ -1,4 +1,10 @@
 
+## 0.0.5
+
+### Bug fixes
+
+* **`clearAll` unhandled exception on startup.** On every cold start and hot restart the Dart constructor called `clearAll` on the native engine map (a fire-and-forget method with no `playerId`). On Android, iOS, and macOS the `playerId` guard ran unconditionally at the top of `onMethodCall` / `handle(_:result:)` and `handleMetronomeCall`, so `clearAll` was rejected with `PlatformException(INVALID_ARGS, 'playerId' is required)` before it could be dispatched. Because the call is fire-and-forget the error surfaced as an unhandled exception: two per launch (one from `LoopAudioPlayer`, one from `MetronomePlayer`). Fixed by handling `clearAll` as an early-return before the `playerId` guard in all three platforms (Android, iOS, macOS). The now-unreachable duplicate `clearAll` cases inside the `when`/`switch` blocks were removed.
+
 ## 0.0.4
 
 ### New platforms
