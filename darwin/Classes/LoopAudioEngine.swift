@@ -149,7 +149,7 @@ public class LoopAudioEngine {
     /// Guards the one-time AVAudioSession setCategory/setActive call across all engine instances.
     /// Shared AVAudioSession must only be configured once — reconfiguring while another engine is
     /// running can trigger AVAudioEngineConfigurationChange and invalidate in-flight engines.
-    private static var sessionConfigured = false
+    internal static var sessionConfigured = false
 
     // MARK: - Private: Amplitude Tap
 
