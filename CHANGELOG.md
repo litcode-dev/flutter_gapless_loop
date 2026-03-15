@@ -1,4 +1,14 @@
 
+## 0.0.7
+
+### Build system
+
+* **Swift Package Manager (SPM) support (iOS and macOS).** iOS and macOS Swift sources are now unified in `darwin/Classes/` and exposed as an SPM package (`darwin/Package.swift`). On Flutter 3.27+, SPM is the default build system for both platforms — no configuration flag required. CocoaPods remains supported as a fallback. This consolidation eliminates ~1700 lines of duplicated Swift source.
+
+### Breaking changes
+
+* Minimum Flutter version raised from `3.3.0` to `3.27.0`. Apps targeting an earlier Flutter release should pin to `flutter_gapless_loop: ^0.0.6`.
+
 ## 0.0.6
 
 ### Bug fixes
