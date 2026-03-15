@@ -38,7 +38,7 @@ macos/
 Copy the existing file as-is. Both iOS and macOS versions are byte-for-byte identical. No platform guards needed.
 
 ### BpmDetector.swift
-Use the macOS version with no changes. The iOS version was unnecessarily wrapped in `#if os(iOS)` — it contains only pure signal-processing math with no platform-specific APIs. The sole content difference was `ac` vs `_` for an unused return value; the macOS version's `_` is correct.
+Use the macOS version with no changes. The iOS version was unnecessarily wrapped in `#if os(iOS)` — it contains only pure signal-processing math with no platform-specific APIs. The differences from the iOS version are: (1) the `#if os(iOS)` wrapper, (2) `ac` vs `_` at the `autocorrelate` call site (macOS `_` is correct since the first return value is unused), and (3) one inline comment present in the iOS version but absent in the macOS version. All three differences are benign; using the macOS version as-is is correct.
 
 ### MetronomeEngine.swift
 Use the macOS version with no changes. The iOS version was unnecessarily wrapped in `#if os(iOS)` — it uses only AVFoundation APIs (`AVAudioEngine`, `AVAudioPlayerNode`, `AVAudioPCMBuffer`) that are common to both platforms.
@@ -67,9 +67,10 @@ import os.log
 
 **2. `registrar.messenger` API difference**
 
-On iOS, `messenger` is a method call (`registrar.messenger()`). On macOS, it is a property (`registrar.messenger`). An extension normalises the call site to a property on both platforms:
+On iOS, `messenger` is a method call (`registrar.messenger()`). On macOS, it is a property (`registrar.messenger`). A file-scope extension (outside any class or function body) normalises the call site to a single property name on both platforms:
 
 ```swift
+// File-scope — must be outside any class/function body.
 #if os(iOS)
 private extension FlutterPluginRegistrar {
     var messengerBridge: FlutterBinaryMessenger { messenger() }
@@ -85,7 +86,7 @@ All four channel constructors in `register(with:)` use `registrar.messengerBridg
 
 **3. `detachFromEngine` (iOS only)**
 
-The iOS plugin overrides `detachFromEngine` to reset `LoopAudioEngine.sessionConfigured`. This method is guarded:
+The iOS plugin overrides `detachFromEngine` to dispose all engines and reset `LoopAudioEngine.sessionConfigured`. The existing macOS plugin has no `detachFromEngine` override. This spec preserves that asymmetry by guarding the override behind `#if os(iOS)`:
 
 ```swift
 #if os(iOS)
@@ -99,6 +100,8 @@ public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
 }
 #endif
 ```
+
+> **Note:** macOS lacks engine cleanup on hot-restart. This is a pre-existing gap, not introduced by this migration. A follow-up should add a macOS `detachFromEngine` override that calls `engines.values.forEach { $0.dispose() }`, `engines.removeAll()`, and the metronome equivalents (without the `sessionConfigured` reset, which is iOS-only).
 
 ---
 
@@ -127,6 +130,8 @@ let package = Package(
 ```
 
 The `path` is relative to `darwin/`, so sources are resolved from `darwin/Classes/`. No explicit framework linker settings are needed — AVFoundation is a system framework auto-linked on both platforms.
+
+**Flutter framework dependency:** The plugin's `Package.swift` does NOT declare a dependency on `Flutter` or `FlutterMacOS`. Flutter's build tooling resolves the Flutter framework separately (via generated xcconfig / build settings) and injects the module so that `import Flutter` and `import FlutterMacOS` resolve at compile time. Declaring a local package path dependency on `Flutter`/`FlutterMacOS` in the plugin's own Package.swift would fail outside Flutter's build context because those local package stubs only exist during `flutter build` / `flutter run`. First-party Flutter plugins (e.g. `path_provider`, `url_launcher`) follow the same convention of omitting an explicit Flutter dependency from their Plugin Package.swift.
 
 ---
 
