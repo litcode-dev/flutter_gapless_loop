@@ -13,7 +13,7 @@ Achieves zero-gap, zero-click audio loop playback using AVAudioEngine scheduleBu
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'flutter_gapless_loop' => 'plugin@example.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
+  s.source_files = '../darwin/Classes/**/*'
   s.dependency 'Flutter'
   s.frameworks = 'AVFoundation'
   s.platform = :ios, '14.0'
