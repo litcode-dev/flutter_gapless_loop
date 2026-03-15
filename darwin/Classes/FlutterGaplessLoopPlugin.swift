@@ -55,7 +55,7 @@ private final class MetronomeMethodHandler: NSObject, FlutterPlugin {
 
 // MARK: - FlutterGaplessLoopPlugin
 
-/// The Flutter plugin entry point for flutter_gapless_loop (macOS).
+/// The Flutter plugin entry point for flutter_gapless_loop (iOS and macOS).
 ///
 /// Registers the method channel and event channel, manages [LoopAudioEngine] instances
 /// keyed by player ID, and routes all Flutter method calls to the correct engine.

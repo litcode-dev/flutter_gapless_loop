@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'flutter_gapless_loop'
-  s.version          = '0.0.1'
+  s.version          = '0.0.6'
   s.summary          = 'True sample-accurate gapless audio looping for macOS using AVAudioEngine.'
   s.description      = <<-DESC
 Achieves zero-gap, zero-click audio loop playback using AVAudioEngine scheduleBuffer with .loops
