@@ -131,15 +131,36 @@ let package = Package(
 
 The `path` is relative to `darwin/`, so sources are resolved from `darwin/Classes/`. No explicit framework linker settings are needed — AVFoundation is a system framework auto-linked on both platforms.
 
-**Flutter framework dependency:** The plugin's `Package.swift` does NOT declare a dependency on `Flutter` or `FlutterMacOS`. Flutter's build tooling resolves the Flutter framework separately (via generated xcconfig / build settings) and injects the module so that `import Flutter` and `import FlutterMacOS` resolve at compile time. Declaring a local package path dependency on `Flutter`/`FlutterMacOS` in the plugin's own Package.swift would fail outside Flutter's build context because those local package stubs only exist during `flutter build` / `flutter run`. First-party Flutter plugins (e.g. `path_provider`, `url_launcher`) follow the same convention of omitting an explicit Flutter dependency from their Plugin Package.swift.
+**Flutter framework dependency:** Flutter's SPM tooling generates a local `FlutterFramework` package at build time (inside its symlinks directory). The plugin's `Package.swift` may need to declare a dependency on it so that `import Flutter` and `import FlutterMacOS` resolve:
+
+```swift
+dependencies: [
+    .package(name: "FlutterFramework", path: "../FlutterFramework"),
+],
+targets: [
+    .target(
+        name: "flutter_gapless_loop",
+        dependencies: [
+            .product(name: "FlutterFramework", package: "FlutterFramework"),
+        ],
+        path: "Classes"
+    ),
+]
+```
+
+> **Implementation note:** The exact Package.swift structure (file location, source directory layout, and whether the `FlutterFramework` dependency must be declared explicitly or is injected by Flutter's tooling) **must be verified during implementation** against the Flutter version in use. The above is the expected form for Flutter ≥ 3.24. If a `flutter pub get` or `flutter build` produces "no such module 'Flutter'" errors, adding the `FlutterFramework` dependency declaration is the fix. If it produces a "no such local package 'FlutterFramework'" error outside a Flutter build context, that is expected and not a problem — the path is only created during `flutter build` / `flutter run`.
 
 ---
 
 ## pubspec.yaml
 
-Add `sharedDarwinSource: true` to both the `ios` and `macos` platform entries:
+SPM support was introduced in Flutter 3.19 (experimental) and stabilised in Flutter 3.24. Bump the minimum Flutter constraint and add `sharedDarwinSource: true` to both the `ios` and `macos` platform entries:
 
 ```yaml
+environment:
+  sdk: ^3.11.0
+  flutter: '>=3.24.0'   # bumped from 3.3.0 — SPM support requires Flutter 3.24+
+
 flutter:
   plugin:
     platforms:
@@ -155,6 +176,8 @@ flutter:
       windows:
         pluginClass: FlutterGaplessLoopPlugin
 ```
+
+> **Breaking change:** Raising the minimum Flutter from `3.3.0` to `3.24.0` drops support for Flutter versions released before mid-2024. This is acceptable — Flutter 3.24 is the minimum that ships SPM tooling stable enough to depend on.
 
 ---
 
