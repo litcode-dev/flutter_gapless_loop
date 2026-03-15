@@ -19,6 +19,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  web: ^1.1.0
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
@@ -39,3 +43,6 @@ flutter:
         sharedDarwinSource: true
       windows:
         pluginClass: FlutterGaplessLoopPlugin
+      web:
+        pluginClass: FlutterGaplessLoopWeb
+        fileName: flutter_gapless_loop_web.dart
