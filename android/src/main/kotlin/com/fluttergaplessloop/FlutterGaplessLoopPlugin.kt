@@ -65,6 +65,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
 
     private var pluginBinding: FlutterPlugin.FlutterPluginBinding? = null
 
+    /** Manages MediaSession + media notification. Lifecycle tied to the plugin. */
+    private var nowPlayingManager: NowPlayingManager? = null
+
+    /** The player ID that currently owns the MediaSession / NowPlayingInfo. */
+    private var activeNowPlayingId: String? = null
+
     /** Coroutine scope for async operations (file loading). Main dispatcher = Flutter-safe. */
     private val pluginScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -96,6 +102,20 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             }
         })
 
+        val ctx = binding.applicationContext
+        nowPlayingManager = NowPlayingManager(ctx).also { mgr ->
+            AudioPlaybackService.nowPlayingManager = mgr
+            mgr.onRemoteCommand = { command, position ->
+                val pid = activeNowPlayingId ?: return@also
+                val payload = mutableMapOf<String, Any>(
+                    "playerId" to pid,
+                    "type"     to "remoteCommand",
+                    "command"  to command
+                )
+                if (position != null) payload["position"] = position
+                sendEvent(payload)
+            }
+        }
         Log.i(TAG, "Attached to engine")
     }
 
@@ -108,6 +128,10 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
         engines.clear()
         metronomes.values.forEach { it.dispose() }
         metronomes.clear()
+        nowPlayingManager?.release()
+        nowPlayingManager = null
+        AudioPlaybackService.nowPlayingManager = null
+        binding.applicationContext?.let { AudioPlaybackService.stop(it) }
         pluginBinding = null
         Log.i(TAG, "Detached from engine")
     }
@@ -271,6 +295,29 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            "setPitch" -> {
+                val semitones = call.argument<Double>("semitones")?.toFloat() ?: 0f
+                eng.setPitch(semitones)
+                result.success(null)
+            }
+
+            "setNowPlayingInfo" -> {
+                activeNowPlayingId = playerId
+                nowPlayingManager?.setInfo(
+                    title        = call.argument("title"),
+                    artist       = call.argument("artist"),
+                    album        = call.argument("album"),
+                    duration     = call.argument("duration"),
+                    artworkBytes = call.argument<ByteArray>("artworkBytes")
+                )
+                result.success(null)
+            }
+
+            "clearNowPlayingInfo" -> {
+                nowPlayingManager?.clear()
+                result.success(null)
+            }
+
             "seek" -> {
                 val position = call.argument<Double>("position") ?: 0.0
                 eng.seek(position)
@@ -317,9 +364,6 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
      * - Route change: `{"playerId": "loop_0", "type": "routeChange", "reason": "headphonesUnplugged"}`
      */
     private fun wireEngineCallbacks(eng: LoopAudioEngine, playerId: String) {
-        eng.onStateChange = { state ->
-            sendEvent(mapOf("playerId" to playerId, "type" to "stateChange", "state" to state.rawValue))
-        }
         eng.onError = { error ->
             sendEvent(mapOf("playerId" to playerId, "type" to "error", "message" to error.toMessage()))
         }
@@ -344,6 +388,44 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 "rms"      to rms,
                 "peak"     to peak
             ))
+        }
+
+        eng.onInterruption = { interruptionType ->
+            sendEvent(mapOf(
+                "playerId"         to playerId,
+                "type"             to "interruption",
+                "interruptionType" to interruptionType
+            ))
+        }
+
+        eng.onSeekComplete = { position ->
+            sendEvent(mapOf(
+                "playerId" to playerId,
+                "type"     to "seekComplete",
+                "position" to position
+            ))
+        }
+
+        eng.onStateChange = { state ->
+            sendEvent(mapOf("playerId" to playerId, "type" to "stateChange", "state" to state.rawValue))
+            // Start / stop the foreground service based on playback state
+            val ctx = pluginBinding?.applicationContext
+            if (ctx != null) {
+                when (state) {
+                    is EngineState.Playing -> {
+                        AudioPlaybackService.start(ctx)
+                        nowPlayingManager?.updatePlaybackState(isPlaying = true)
+                    }
+                    is EngineState.Paused -> {
+                        nowPlayingManager?.updatePlaybackState(isPlaying = false)
+                    }
+                    is EngineState.Stopped, is EngineState.Error, is EngineState.Idle -> {
+                        AudioPlaybackService.stop(ctx)
+                        nowPlayingManager?.updatePlaybackState(isPlaying = false)
+                    }
+                    else -> {}
+                }
+            }
         }
     }
 

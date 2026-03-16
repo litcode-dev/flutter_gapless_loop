@@ -119,6 +119,18 @@ class LoopAudioEngine(private val context: Context) {
      */
     var onAmplitude: ((Float, Float) -> Unit)? = null
 
+    /**
+     * Invoked when a system audio interruption begins or ends.
+     * Argument is `"began"` or `"ended"`. Always called on the main thread.
+     */
+    var onInterruption: ((String) -> Unit)? = null
+
+    /**
+     * Invoked after [seek] updates the frame position.
+     * Argument is the actual seek position in seconds. Always called on the main thread.
+     */
+    var onSeekComplete: ((Double) -> Unit)? = null
+
     // ─── Public read-only state ───────────────────────────────────────────────
 
     private var _state: EngineState = EngineState.Idle
@@ -293,7 +305,7 @@ class LoopAudioEngine(private val context: Context) {
         }
         currentFrameAtomic.set(loopStartFrame.toLong())
         audioTrack?.play()
-        applyPlaybackRate()
+        applyPlaybackParams()
         startWriteThread()
         setState(EngineState.Playing)
     }
@@ -434,8 +446,11 @@ class LoopAudioEngine(private val context: Context) {
         audioTrack?.setStereoVolume(leftGain, rightGain)
     }
 
-    /** Backing field for [setPlaybackRate]. Written from main thread; read by [applyPlaybackRate]. */
+    /** Backing field for [setPlaybackRate]. Written from main thread; read by [applyPlaybackParams]. */
     @Volatile private var playbackRate: Float = 1f
+
+    /** Backing field for [setPitch]. Written from main thread; read by [applyPlaybackParams]. */
+    @Volatile private var pitchSemitones: Float = 0f
 
     /**
      * Sets the playback rate (speed) while preserving pitch.
@@ -445,12 +460,34 @@ class LoopAudioEngine(private val context: Context) {
      */
     fun setPlaybackRate(rate: Float) {
         playbackRate = rate.coerceIn(0.25f, 4.0f)
-        applyPlaybackRate()
+        applyPlaybackParams()
     }
 
-    private fun applyPlaybackRate() {
+    /**
+     * Shifts the pitch by [semitones] without changing playback speed.
+     *
+     * `0.0` = no shift (default). Range: −24.0 to +24.0 semitones (±2 octaves).
+     * Converts to a linear pitch multiplier via `2^(semitones/12)` and applies via
+     * [PlaybackParams.setPitch] on API 23+. No-op on older devices.
+     *
+     * This is fully independent of [setPlaybackRate] — both are applied together
+     * in a single [PlaybackParams] object so neither overrides the other.
+     */
+    fun setPitch(semitones: Float) {
+        pitchSemitones = semitones.coerceIn(-24f, 24f)
+        applyPlaybackParams()
+    }
+
+    /**
+     * Applies the current [playbackRate] and [pitchSemitones] to the [AudioTrack]
+     * in a single [PlaybackParams] call so they never override each other.
+     */
+    private fun applyPlaybackParams() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            audioTrack?.playbackParams = PlaybackParams().setSpeed(playbackRate)
+            val pitchFactor = Math.pow(2.0, (pitchSemitones / 12.0).toDouble()).toFloat()
+            audioTrack?.playbackParams = PlaybackParams()
+                .setSpeed(playbackRate)
+                .setPitch(pitchFactor)
         }
     }
 
@@ -468,6 +505,8 @@ class LoopAudioEngine(private val context: Context) {
         val targetFrame = (seconds * sampleRate).toLong()
             .coerceIn(loopStartFrame.toLong(), loopEndFrame.toLong())
         currentFrameAtomic.set(targetFrame)
+        val actualPosition = targetFrame.toDouble() / sampleRate.toDouble()
+        engineScope.launch { onSeekComplete?.invoke(actualPosition) }
         Log.i(TAG, "seek: ${seconds}s → frame $targetFrame")
     }
 
@@ -548,7 +587,7 @@ class LoopAudioEngine(private val context: Context) {
 
         Log.i(TAG, "AudioTrack built: ${sampleRate}Hz ${channelCount}ch buf=${bufBytes}B")
         applyPan() // Restore pan setting after AudioTrack recreation
-        applyPlaybackRate() // Restore playback rate after AudioTrack recreation
+        applyPlaybackParams() // Restore playback rate + pitch after AudioTrack recreation
     }
 
     // ─── Private: write thread ────────────────────────────────────────────────
@@ -832,12 +871,18 @@ class LoopAudioEngine(private val context: Context) {
         }
         sessionManager.onFocusLossTransient = {
             engineScope.launch {
-                if (_state == EngineState.Playing) pause()
+                if (_state == EngineState.Playing) {
+                    pause()
+                    onInterruption?.invoke("began")
+                }
             }
         }
         sessionManager.onFocusGain = {
             engineScope.launch {
-                if (_state == EngineState.Paused) resume()
+                if (_state == EngineState.Paused) {
+                    resume()
+                    onInterruption?.invoke("ended")
+                }
             }
         }
         sessionManager.onDuckVolume = { vol ->

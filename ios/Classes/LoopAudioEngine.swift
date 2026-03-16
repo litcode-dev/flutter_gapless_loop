@@ -90,6 +90,14 @@ public class LoopAudioEngine {
     /// while the engine is playing. Always dispatched to `DispatchQueue.main`.
     public var onAmplitude: ((Float, Float) -> Void)?
 
+    /// Called when a system audio interruption begins or ends.
+    /// Argument is `"began"` or `"ended"`. Always dispatched to `DispatchQueue.main`.
+    public var onInterruption: ((String) -> Void)?
+
+    /// Called after a seek operation completes and the buffer has been rescheduled.
+    /// Argument is the actual seek position in seconds. Dispatched to `DispatchQueue.main`.
+    public var onSeekComplete: ((TimeInterval) -> Void)?
+
     // MARK: - Private: Engine Infrastructure
 
     private let engine = AVAudioEngine()
@@ -470,6 +478,22 @@ public class LoopAudioEngine {
         }
     }
 
+    /// Shifts the pitch by [semitones] without changing playback speed.
+    ///
+    /// `0.0` = no shift (default). Range: −24.0 to +24.0 semitones (±2 octaves).
+    /// `AVAudioUnitTimePitch.pitch` is in cents (100 cents = 1 semitone), so the
+    /// value is multiplied by 100 before being applied.
+    ///
+    /// This is fully independent of `setPlaybackRate` — both properties on
+    /// `AVAudioUnitTimePitch` can be set simultaneously.
+    public func setPitch(_ semitones: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            // AVAudioUnitTimePitch.pitch range: −2400 to +2400 cents
+            self.timePitchNode.pitch = max(-2400.0, min(2400.0, semitones * 100.0))
+        }
+    }
+
     /// Seeks to a position within the loaded file.
     ///
     /// In Modes A and B, seeking stops nodeA, plays the remaining frames of the
@@ -510,6 +534,10 @@ public class LoopAudioEngine {
 
             if wasPlaying { self.nodeA.play() }
             self.logger.info("seek: \(time)s")
+            let seekPosition = time
+            DispatchQueue.main.async { [weak self] in
+                self?.onSeekComplete?(seekPosition)
+            }
         }
     }
 
@@ -819,6 +847,9 @@ public class LoopAudioEngine {
                     self.setState(.paused)
                     self.logger.info("Interruption began: paused")
                 }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onInterruption?("began")
+                }
             case .ended:
                 // Resume only if the system signals it is safe to do so.
                 if let optValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
@@ -835,6 +866,9 @@ public class LoopAudioEngine {
                             self.setState(.error)
                         }
                     }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onInterruption?("ended")
                 }
             @unknown default:
                 break

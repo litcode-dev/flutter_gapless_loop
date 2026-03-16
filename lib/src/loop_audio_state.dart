@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 /// Playback state of the [LoopAudioPlayer].
 enum PlayerState {
   /// No file has been loaded. Initial state.
@@ -34,6 +36,15 @@ enum RouteChangeReason {
   unknown,
 }
 
+/// Whether a system audio interruption began or ended.
+enum InterruptionType {
+  /// The interruption began (e.g. phone call, Siri, another app takes audio focus).
+  began,
+
+  /// The interruption ended (the system released audio focus back to this app).
+  ended,
+}
+
 /// Carries the reason for an audio route change from the native layer.
 class RouteChangeEvent {
   /// The reason this route change occurred.
@@ -41,6 +52,99 @@ class RouteChangeEvent {
 
   /// Creates a [RouteChangeEvent] with the given [reason].
   const RouteChangeEvent(this.reason);
+}
+
+/// Emitted by [LoopAudioPlayer.interruptionStream] when the system interrupts
+/// or resumes audio (phone calls, Siri, other apps requesting audio focus).
+///
+/// On iOS this maps to `AVAudioSession.interruptionNotification`.
+/// On Android this maps to `AudioManager.AUDIOFOCUS_LOSS_TRANSIENT`.
+///
+/// The player automatically pauses on [InterruptionType.began] and, where the
+/// system permits, resumes on [InterruptionType.ended].
+class InterruptionEvent {
+  /// Whether the interruption began or ended.
+  final InterruptionType type;
+
+  const InterruptionEvent(this.type);
+}
+
+/// A remote-control command received from the system lock screen, headphone
+/// buttons, CarPlay, or Android media notification.
+///
+/// Emitted by [LoopAudioPlayer.remoteCommandStream].
+/// The app is responsible for acting on these commands (e.g. calling
+/// [LoopAudioPlayer.play] when [RemotePlayCommand] is received).
+sealed class RemoteCommand {
+  const RemoteCommand();
+}
+
+/// The user pressed the play button on the lock screen or headphones.
+class RemotePlayCommand extends RemoteCommand {
+  const RemotePlayCommand();
+}
+
+/// The user pressed the pause button.
+class RemotePauseCommand extends RemoteCommand {
+  const RemotePauseCommand();
+}
+
+/// The user pressed stop.
+class RemoteStopCommand extends RemoteCommand {
+  const RemoteStopCommand();
+}
+
+/// The user pressed next-track.
+class RemoteNextTrackCommand extends RemoteCommand {
+  const RemoteNextTrackCommand();
+}
+
+/// The user pressed previous-track.
+class RemotePreviousTrackCommand extends RemoteCommand {
+  const RemotePreviousTrackCommand();
+}
+
+/// The user seeked to [position] seconds via the lock screen scrubber.
+class RemoteSeekCommand extends RemoteCommand {
+  /// Target position in seconds.
+  final double position;
+  const RemoteSeekCommand(this.position);
+}
+
+/// Metadata displayed on the iOS lock screen / Control Center and the Android
+/// media notification.
+///
+/// Pass to [LoopAudioPlayer.setNowPlayingInfo] to populate the system media UI.
+/// All fields are optional — supply only what is relevant to your content.
+class NowPlayingInfo {
+  /// Track title shown on the lock screen.
+  final String? title;
+
+  /// Artist name.
+  final String? artist;
+
+  /// Album name.
+  final String? album;
+
+  /// Total duration of the track in seconds.
+  ///
+  /// Required for the lock screen scrubber to display correctly on iOS
+  /// and for the Android notification progress bar.
+  final double? duration;
+
+  /// Cover art as raw PNG or JPEG bytes.
+  ///
+  /// Displayed as album artwork on the lock screen (iOS) and in the
+  /// media notification (Android).
+  final Uint8List? artworkBytes;
+
+  const NowPlayingInfo({
+    this.title,
+    this.artist,
+    this.album,
+    this.duration,
+    this.artworkBytes,
+  });
 }
 
 /// Real-time audio amplitude (level) emitted by [LoopAudioPlayer.amplitudeStream].

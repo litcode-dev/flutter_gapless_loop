@@ -1,4 +1,38 @@
 
+## 0.0.6
+
+### New features
+
+* **`LoopAudioPlayer.setPitch(double semitones)`** — Shifts pitch independently of playback speed. `0.0` = no shift; range ±24 semitones (±2 octaves). On iOS uses `AVAudioUnitTimePitch.pitch` (cents). On Android uses `PlaybackParams.setPitch()` with a `2^(semitones/12)` multiplier. Fully orthogonal to `setPlaybackRate` — both can be set simultaneously.
+
+* **`LoopAudioPlayer.seekCompleteStream`** — A `Stream<double>` that emits the seek position (seconds) once the native engine has rescheduled its buffers. Useful for confirming seeks before updating UI or synchronising players.
+
+* **`LoopAudioPlayer.interruptionStream`** — A `Stream<InterruptionEvent>` that exposes system audio interruptions (phone calls, Siri, other apps taking audio focus). Emits `InterruptionType.began` when the player is automatically paused and `InterruptionType.ended` when the system releases focus. The player auto-pauses/resumes; listen to this stream to keep your UI in sync.
+
+* **`LoopAudioPlayer.setNowPlayingInfo(NowPlayingInfo)` / `clearNowPlayingInfo()`** — Populates the iOS lock screen / Control Center (`MPNowPlayingInfoCenter`) and the Android media notification with track title, artist, album, duration, and optional cover art (`artworkBytes`). Once called, remote commands (play, pause, seek, next/previous) are delivered via `remoteCommandStream`.
+
+* **`LoopAudioPlayer.remoteCommandStream`** — A `Stream<RemoteCommand>` of commands from the lock screen, headphone buttons, CarPlay, and the Android media notification. Subtypes: `RemotePlayCommand`, `RemotePauseCommand`, `RemoteStopCommand`, `RemoteNextTrackCommand`, `RemotePreviousTrackCommand`, `RemoteSeekCommand(position)`.
+
+* **Background audio on Android** — `AudioPlaybackService`, a foreground `Service` with a `Notification.MediaStyle` notification, is automatically started when playback begins and stopped when it ends. This keeps the audio process alive when the screen is off. No changes required in the host app's manifest — the service is declared in the plugin's own manifest.
+
+* **Background audio on iOS** — The example app's `Info.plist` now includes `UIBackgroundModes: [audio]`. Host apps must add this key themselves to enable background playback:
+  ```xml
+  <key>UIBackgroundModes</key>
+  <array><string>audio</string></array>
+  ```
+
+### New types
+
+* `InterruptionType` enum — `began`, `ended`
+* `InterruptionEvent` class — wraps `InterruptionType`
+* `RemoteCommand` sealed class — `RemotePlayCommand`, `RemotePauseCommand`, `RemoteStopCommand`, `RemoteNextTrackCommand`, `RemotePreviousTrackCommand`, `RemoteSeekCommand`
+* `NowPlayingInfo` class — `title`, `artist`, `album`, `duration`, `artworkBytes`
+
+### Native changes
+
+* **iOS:** `LoopAudioEngine` gains `onInterruption`, `onSeekComplete` callbacks and `setPitch(_:)`. `FlutterGaplessLoopPlugin` sets up `MPRemoteCommandCenter` targets once and forwards commands as event-channel events. `MediaPlayer` framework added to podspec.
+* **Android:** `LoopAudioEngine` gains `onInterruption`, `onSeekComplete` callbacks and `setPitch(Float)`. `applyPlaybackRate()` renamed to `applyPlaybackParams()` and updated to apply both rate and pitch in a single `PlaybackParams`. New `NowPlayingManager` manages `MediaSession` and notification. New `AudioPlaybackService` foreground service. Manifest gains `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` permissions and service declaration.
+
 ## 0.0.5
 
 ### New features

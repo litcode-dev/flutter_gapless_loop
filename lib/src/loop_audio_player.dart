@@ -60,6 +60,8 @@ class LoopAudioPlayer {
     if (_isDisposed) throw StateError('LoopAudioPlayer has been disposed.');
   }
 
+  // ── Streams ──────────────────────────────────────────────────────────────
+
   /// Stream of [PlayerState] changes pushed from the native layer.
   Stream<PlayerState> get stateStream {
     _checkNotDisposed();
@@ -83,6 +85,22 @@ class LoopAudioPlayer {
     return _events
         .where((e) => e['type'] == 'routeChange')
         .map((e) => RouteChangeEvent(_parseReason(e['reason'] as String? ?? '')));
+  }
+
+  /// Stream of [InterruptionEvent]s pushed when the system interrupts or
+  /// resumes audio (phone calls, Siri, other apps requesting audio focus).
+  ///
+  /// The player automatically pauses on [InterruptionType.began] — listen to
+  /// this stream if you need to update your UI accordingly.
+  Stream<InterruptionEvent> get interruptionStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'interruption')
+        .map((e) => InterruptionEvent(
+              e['interruptionType'] == 'began'
+                  ? InterruptionType.began
+                  : InterruptionType.ended,
+            ));
   }
 
   /// Stream of [BpmResult] emitted automatically after each successful load.
@@ -110,6 +128,44 @@ class LoopAudioPlayer {
         .where((e) => e['type'] == 'amplitude')
         .map((e) => AmplitudeEvent.fromMap(e));
   }
+
+  /// Stream that emits the seek position (in seconds) once the native engine
+  /// has rescheduled its buffers after a [seek] call.
+  ///
+  /// Useful for confirming the seek completed before updating UI or
+  /// synchronising with other players.
+  Stream<double> get seekCompleteStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'seekComplete')
+        .map((e) => (e['position'] as num? ?? 0).toDouble());
+  }
+
+  /// Stream of [RemoteCommand]s from the system lock screen, headphone
+  /// buttons, CarPlay, or Android media notification.
+  ///
+  /// The app must act on these commands — the plugin does NOT automatically
+  /// call [play] or [pause] in response:
+  ///
+  /// ```dart
+  /// player.remoteCommandStream.listen((cmd) async {
+  ///   if (cmd is RemotePlayCommand)  await player.play();
+  ///   if (cmd is RemotePauseCommand) await player.pause();
+  ///   if (cmd is RemoteSeekCommand)  await player.seek(cmd.position);
+  /// });
+  /// ```
+  ///
+  /// Commands are only emitted while [setNowPlayingInfo] has been called at
+  /// least once for this player.
+  Stream<RemoteCommand> get remoteCommandStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'remoteCommand')
+        .map(_parseRemoteCommand)
+        .whereType<RemoteCommand>();
+  }
+
+  // ── Loading ───────────────────────────────────────────────────────────────
 
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
   /// The native layer resolves the asset key to an absolute path using the
@@ -172,6 +228,8 @@ class LoopAudioPlayer {
     }
   }
 
+  // ── Transport ──────────────────────────────────────────────────────────────
+
   /// Starts looping playback from the beginning (or current loop region start).
   Future<void> play() async {
     _checkNotDisposed();
@@ -195,6 +253,8 @@ class LoopAudioPlayer {
     _checkNotDisposed();
     await _channel.invokeMethod<void>('stop', {'playerId': _playerId});
   }
+
+  // ── Loop region / crossfade ───────────────────────────────────────────────
 
   /// Sets the loop region in seconds. Both [start] and [end] are inclusive.
   ///
@@ -220,6 +280,8 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>(
         'setCrossfadeDuration', {'playerId': _playerId, 'duration': seconds});
   }
+
+  // ── Audio controls ────────────────────────────────────────────────────────
 
   /// Sets the playback volume. Range: 0.0 (silent) to 1.0 (full volume).
   ///
@@ -277,11 +339,30 @@ class LoopAudioPlayer {
         'setPlaybackRate', {'playerId': _playerId, 'rate': rate.clamp(0.25, 4.0)});
   }
 
+  /// Shifts the pitch by [semitones] without changing playback speed.
+  ///
+  /// `0.0` = no shift (default). Positive values raise pitch; negative lower it.
+  /// Values outside [−24.0, 24.0] (±2 octaves) are clamped.
+  ///
+  /// This is independent of [setPlaybackRate]: you can time-stretch and
+  /// pitch-shift simultaneously with different values.
+  ///
+  /// On iOS this uses `AVAudioUnitTimePitch.pitch` (pitch property in cents).
+  /// On Android this uses `PlaybackParams.setPitch()`.
+  ///
+  /// Throws [PlatformException] on native error.
+  Future<void> setPitch(double semitones) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>(
+        'setPitch', {'playerId': _playerId, 'semitones': semitones.clamp(-24.0, 24.0)});
+  }
+
+  // ── Seek ──────────────────────────────────────────────────────────────────
+
   /// Seeks to [seconds] within the loaded file.
   ///
-  /// Note: seeking during `.loops` mode causes a brief reschedule on the native
-  /// side. The next loop boundary will restart from the loop region start, not
-  /// the seek position.
+  /// Listen to [seekCompleteStream] if you need confirmation that the native
+  /// engine has rescheduled its buffers.
   ///
   /// Throws [PlatformException] on native error.
   Future<void> seek(double seconds) async {
@@ -289,6 +370,8 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>(
         'seek', {'playerId': _playerId, 'position': seconds});
   }
+
+  // ── Position / duration ───────────────────────────────────────────────────
 
   /// Returns the total duration of the loaded file.
   Future<Duration> get duration async {
@@ -305,12 +388,55 @@ class LoopAudioPlayer {
         'getCurrentPosition', {'playerId': _playerId}) ?? 0.0;
   }
 
+  // ── Now Playing / lock screen ─────────────────────────────────────────────
+
+  /// Populates the system media UI (iOS lock screen / Control Center,
+  /// Android media notification) with the given [info].
+  ///
+  /// This also enables [remoteCommandStream]: once called, the system will
+  /// deliver lock-screen / headphone button commands to the app.
+  ///
+  /// Call this whenever the loaded file changes, or when playback begins.
+  ///
+  /// On Android, calling this method starts a foreground service so audio
+  /// continues to play when the screen is off. The service stops automatically
+  /// when [stop] or [dispose] is called.
+  ///
+  /// **iOS setup required:** add `audio` to `UIBackgroundModes` in your app's
+  /// `Info.plist` for background audio to work:
+  /// ```xml
+  /// <key>UIBackgroundModes</key>
+  /// <array><string>audio</string></array>
+  /// ```
+  Future<void> setNowPlayingInfo(NowPlayingInfo info) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('setNowPlayingInfo', {
+      'playerId': _playerId,
+      if (info.title != null)        'title':        info.title,
+      if (info.artist != null)       'artist':       info.artist,
+      if (info.album != null)        'album':        info.album,
+      if (info.duration != null)     'duration':     info.duration,
+      if (info.artworkBytes != null) 'artworkBytes': info.artworkBytes,
+    });
+  }
+
+  /// Clears the system media UI and removes the lock-screen / notification
+  /// entry set by [setNowPlayingInfo].
+  Future<void> clearNowPlayingInfo() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('clearNowPlayingInfo', {'playerId': _playerId});
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
   /// Releases all native resources. This instance cannot be used after calling dispose.
   Future<void> dispose() async {
     _isDisposed = true;
     LoopAudioMaster._instances.remove(this);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
+
+  // ── Private helpers ───────────────────────────────────────────────────────
 
   PlayerState _parseState(String s) => switch (s) {
         'loading' => PlayerState.loading,
@@ -327,6 +453,19 @@ class LoopAudioPlayer {
         'categoryChange'      => RouteChangeReason.categoryChange,
         _                     => RouteChangeReason.unknown,
       };
+
+  RemoteCommand? _parseRemoteCommand(Map<Object?, Object?> e) {
+    final cmd = e['command'] as String?;
+    return switch (cmd) {
+      'play'          => const RemotePlayCommand(),
+      'pause'         => const RemotePauseCommand(),
+      'stop'          => const RemoteStopCommand(),
+      'nextTrack'     => const RemoteNextTrackCommand(),
+      'previousTrack' => const RemotePreviousTrackCommand(),
+      'seek'          => RemoteSeekCommand((e['position'] as num? ?? 0).toDouble()),
+      _               => null,
+    };
+  }
 }
 
 /// A static group-bus controller for all live [LoopAudioPlayer] instances.

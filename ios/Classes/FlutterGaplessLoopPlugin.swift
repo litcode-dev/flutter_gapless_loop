@@ -2,6 +2,7 @@
 import Flutter
 import UIKit
 import AVFoundation
+import MediaPlayer
 import os.log
 
 // MARK: - MetronomeStreamHandler
@@ -65,6 +66,12 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // Metronome
     private let metronomeStreamHandler = MetronomeStreamHandler()
     private let metronomeMethodHandler = MetronomeMethodHandler()
+
+    // NowPlaying / remote commands
+    /// The player ID that currently "owns" MPNowPlayingInfoCenter and remote commands.
+    private var activePlayerId: String?
+    /// True once MPRemoteCommandCenter targets have been registered (registered once).
+    private var remoteCommandsRegistered = false
 
     // MARK: - FlutterPlugin Registration
 
@@ -185,6 +192,26 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 "rms":      rms,
                 "peak":     peak
             ])
+        }
+
+        eng.onInterruption = { [weak self] interruptionType in
+            DispatchQueue.main.async {
+                self?.eventSink?([
+                    "playerId":          playerId,
+                    "type":              "interruption",
+                    "interruptionType":  interruptionType
+                ])
+            }
+        }
+
+        eng.onSeekComplete = { [weak self] position in
+            DispatchQueue.main.async {
+                self?.eventSink?([
+                    "playerId": playerId,
+                    "type":     "seekComplete",
+                    "position": position
+                ])
+            }
         }
     }
 
@@ -328,6 +355,22 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 return
             }
             eng.setPlaybackRate(Float(rate))
+            DispatchQueue.main.async { result(nil) }
+
+        case "setPitch":
+            guard let semitones = args?["semitones"] as? Double else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'semitones' is required", details: nil)) }
+                return
+            }
+            eng.setPitch(Float(semitones))
+            DispatchQueue.main.async { result(nil) }
+
+        case "setNowPlayingInfo":
+            setNowPlayingInfo(args: args, playerId: pid)
+            DispatchQueue.main.async { result(nil) }
+
+        case "clearNowPlayingInfo":
+            clearNowPlayingInfo()
             DispatchQueue.main.async { result(nil) }
 
         case "seek":
@@ -510,6 +553,85 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
 
         default:
             result(FlutterMethodNotImplemented)
+        }
+    }
+
+    // MARK: - NowPlaying / Remote Commands
+
+    /// Populates `MPNowPlayingInfoCenter` and registers `MPRemoteCommandCenter`
+    /// targets once. Subsequent calls update the now-playing metadata only.
+    private func setNowPlayingInfo(args: [String: Any]?, playerId: String) {
+        activePlayerId = playerId
+        setupRemoteCommands()
+
+        var info: [String: Any] = [:]
+        if let title   = args?["title"]   as? String { info[MPMediaItemPropertyTitle]        = title   }
+        if let artist  = args?["artist"]  as? String { info[MPMediaItemPropertyArtist]       = artist  }
+        if let album   = args?["album"]   as? String { info[MPMediaItemPropertyAlbumTitle]   = album   }
+        if let dur     = args?["duration"] as? Double { info[MPMediaItemPropertyPlaybackDuration] = dur }
+        if let artData = args?["artworkBytes"] as? FlutterStandardTypedData,
+           let image   = UIImage(data: artData.data) {
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        logger.info("setNowPlayingInfo: title=\(info[MPMediaItemPropertyTitle] as? String ?? "(none)")")
+    }
+
+    private func clearNowPlayingInfo() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        logger.info("clearNowPlayingInfo")
+    }
+
+    /// Registers MPRemoteCommandCenter targets exactly once.
+    /// All commands are forwarded to the Dart layer via the event sink,
+    /// tagged with `activePlayerId`. The app is responsible for acting on them.
+    private func setupRemoteCommands() {
+        guard !remoteCommandsRegistered else { return }
+        remoteCommandsRegistered = true
+
+        let cc = MPRemoteCommandCenter.shared()
+
+        cc.playCommand.addTarget { [weak self] _ in
+            self?.sendRemoteCommand("play")
+            return .success
+        }
+        cc.pauseCommand.addTarget { [weak self] _ in
+            self?.sendRemoteCommand("pause")
+            return .success
+        }
+        cc.stopCommand.addTarget { [weak self] _ in
+            self?.sendRemoteCommand("stop")
+            return .success
+        }
+        cc.nextTrackCommand.addTarget { [weak self] _ in
+            self?.sendRemoteCommand("nextTrack")
+            return .success
+        }
+        cc.previousTrackCommand.addTarget { [weak self] _ in
+            self?.sendRemoteCommand("previousTrack")
+            return .success
+        }
+        cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let seekEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            self?.sendRemoteCommand("seek", position: seekEvent.positionTime)
+            return .success
+        }
+        logger.info("MPRemoteCommandCenter targets registered")
+    }
+
+    private func sendRemoteCommand(_ command: String, position: Double? = nil) {
+        guard let pid = activePlayerId else { return }
+        var payload: [String: Any] = [
+            "playerId": pid,
+            "type":     "remoteCommand",
+            "command":  command
+        ]
+        if let pos = position { payload["position"] = pos }
+        DispatchQueue.main.async { [weak self] in
+            self?.eventSink?(payload)
         }
     }
 

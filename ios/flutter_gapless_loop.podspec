@@ -15,7 +15,7 @@ Achieves zero-gap, zero-click audio loop playback using AVAudioEngine scheduleBu
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.frameworks = 'AVFoundation'
+  s.frameworks = 'AVFoundation', 'MediaPlayer'
   s.platform = :ios, '14.0'
 
   # Flutter.framework does not contain a i386 slice.

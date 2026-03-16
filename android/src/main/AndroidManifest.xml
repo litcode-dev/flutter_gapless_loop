@@ -7,4 +7,23 @@
     <!-- Read audio files from media store (API 33+) -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
 
+    <!-- Required to start AudioPlaybackService as a foreground service (API 28+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+
+    <!-- Required for foreground services of type mediaPlayback (API 34+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+
+    <application>
+        <!--
+          Foreground service that keeps audio alive when the screen is off.
+          android:foregroundServiceType="mediaPlayback" is required on API 34+
+          for audio playback foreground services.
+          android:exported="false" — not accessible from other apps.
+        -->
+        <service
+            android:name="com.fluttergaplessloop.AudioPlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false"/>
+    </application>
+
 </manifest>
