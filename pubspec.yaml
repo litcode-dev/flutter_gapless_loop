@@ -1,6 +1,6 @@
 name: flutter_gapless_loop
 description: "True sample-accurate gapless audio looping on iOS, Android, macOS, and Windows. Zero-gap, zero-click loop playback for music production apps."
-version: 0.0.6
+version: 0.0.7
 homepage: https://github.com/litcode-dev/flutter_gapless_loop
 repository: https://github.com/litecode-dev/flutter_gapless_loop
 issue_tracker: https://github.com/litecode-dev/flutter_gapless_loop/issues
@@ -14,11 +14,15 @@ topics:
 
 environment:
   sdk: ^3.11.0
-  flutter: '>=3.3.0'
+  flutter: '>=3.27.0'
 
 dependencies:
   flutter:
     sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  web: ^1.1.0
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
@@ -30,10 +34,15 @@ flutter:
     platforms:
       ios:
         pluginClass: FlutterGaplessLoopPlugin
+        sharedDarwinSource: true
       android:
         package: com.fluttergaplessloop
         pluginClass: FlutterGaplessLoopPlugin
       macos:
         pluginClass: FlutterGaplessLoopPlugin
+        sharedDarwinSource: true
       windows:
         pluginClass: FlutterGaplessLoopPlugin
+      web:
+        pluginClass: FlutterGaplessLoopWeb
+        fileName: flutter_gapless_loop_web.dart

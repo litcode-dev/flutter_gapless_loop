@@ -4,16 +4,18 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'flutter_gapless_loop'
-  s.version          = '0.0.1'
-  s.summary          = 'True sample-accurate gapless audio looping for iOS using AVAudioEngine.'
+  s.version          = '0.0.7'
+  s.summary          = 'True sample-accurate gapless audio looping for iOS and macOS using AVAudioEngine.'
   s.description      = <<-DESC
-Achieves zero-gap, zero-click audio loop playback using AVAudioEngine scheduleBuffer with .loops option. Supports loop regions, crossfade, and automatic click prevention via micro-fades.
+Achieves zero-gap, zero-click audio loop playback using AVAudioEngine scheduleBuffer with .loops
+option. Supports loop regions, crossfade, BPM detection, metronome, and automatic click prevention
+via micro-fades.
                        DESC
-  s.homepage         = 'https://github.com/example/flutter_gapless_loop'
+  s.homepage         = 'https://github.com/litecode-dev/flutter_gapless_loop'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'flutter_gapless_loop' => 'plugin@example.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
+  s.source_files = '../darwin/Classes/**/*'
   s.dependency 'Flutter'
   s.frameworks = 'AVFoundation'
   s.platform = :ios, '14.0'

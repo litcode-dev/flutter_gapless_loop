@@ -37,7 +37,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.6
+  flutter_gapless_loop: ^0.0.7
 ```
 
 Then run:
@@ -45,6 +45,10 @@ Then run:
 ```sh
 flutter pub get
 ```
+
+### Swift Package Manager
+
+On Flutter 3.27+, Swift Package Manager is used automatically for iOS and macOS — no extra steps required. CocoaPods is supported as a fallback for apps that require it.
 
 ## Quick start
 
@@ -583,6 +587,7 @@ A 5 ms linear micro-fade is applied to both ends of every loop buffer at load ti
 - All methods throw `PlatformException` if the native engine returns an error (e.g. file not found, unsupported format).
 - **Playback rate on Android** uses `PlaybackParams` (API 23+). On devices running Android 5 or 6, `setPlaybackRate` has no effect.
 - **Crossfade** must be shorter than half the loop region. Very short loop regions with a long crossfade may behave unexpectedly.
+- **Minimum Flutter version:** 3.27.0 (required for Swift Package Manager as the default build system).
 - **Minimum iOS version:** 14.0 (required by `os.log.Logger`).
 - **Minimum macOS version:** 11.0 (required by `os.log.Logger`).
 - **`loadFromUrl`** uses the platform networking stack (`URLSession` on iOS/macOS, `HttpURLConnection` on Android, `URLDownloadToFileW` on Windows). No additional packages are required.

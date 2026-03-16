@@ -1,6 +1,22 @@
+#if os(iOS)
+import Flutter
+import UIKit
+#else
 import FlutterMacOS
+#endif
 import AVFoundation
 import os.log
+
+// File-scope — must be outside any class or function body.
+#if os(iOS)
+private extension FlutterPluginRegistrar {
+    var messengerBridge: FlutterBinaryMessenger { messenger() }
+}
+#else
+private extension FlutterPluginRegistrar {
+    var messengerBridge: FlutterBinaryMessenger { messenger }
+}
+#endif
 
 // MARK: - MetronomeStreamHandler
 
@@ -39,7 +55,7 @@ private final class MetronomeMethodHandler: NSObject, FlutterPlugin {
 
 // MARK: - FlutterGaplessLoopPlugin
 
-/// The Flutter plugin entry point for flutter_gapless_loop (macOS).
+/// The Flutter plugin entry point for flutter_gapless_loop (iOS and macOS).
 ///
 /// Registers the method channel and event channel, manages [LoopAudioEngine] instances
 /// keyed by player ID, and routes all Flutter method calls to the correct engine.
@@ -64,14 +80,13 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // MARK: - FlutterPlugin Registration
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        // On macOS, `registrar.messenger` is a property (not a method call).
         let methodChannel = FlutterMethodChannel(
             name: "flutter_gapless_loop",
-            binaryMessenger: registrar.messenger
+            binaryMessenger: registrar.messengerBridge
         )
         let eventChannel = FlutterEventChannel(
             name: "flutter_gapless_loop/events",
-            binaryMessenger: registrar.messenger
+            binaryMessenger: registrar.messengerBridge
         )
 
         let instance = FlutterGaplessLoopPlugin()
@@ -82,17 +97,32 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         // Metronome channels — separate handler to avoid method-name collisions
         let metronomeMethodChannel = FlutterMethodChannel(
             name: "flutter_gapless_loop/metronome",
-            binaryMessenger: registrar.messenger
+            binaryMessenger: registrar.messengerBridge
         )
         let metronomeEventChannel = FlutterEventChannel(
             name: "flutter_gapless_loop/metronome/events",
-            binaryMessenger: registrar.messenger
+            binaryMessenger: registrar.messengerBridge
         )
         instance.metronomeMethodHandler.plugin = instance
         registrar.addMethodCallDelegate(instance.metronomeMethodHandler,
                                         channel: metronomeMethodChannel)
         metronomeEventChannel.setStreamHandler(instance.metronomeStreamHandler)
     }
+
+    // MARK: - FlutterPlugin Lifecycle
+
+#if os(iOS)
+    /// Called when the engine detaches (hot-restart). Resets the one-time session-configuration
+    /// guard so the next engine instance can reconfigure AVAudioSession cleanly.
+    public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+        engines.values.forEach    { $0.dispose() }
+        engines.removeAll()
+        metronomes.values.forEach { $0.dispose() }
+        metronomes.removeAll()
+        LoopAudioEngine.sessionConfigured = false
+        logger.info("Plugin detached — session config flag reset")
+    }
+#endif
 
     // MARK: - FlutterStreamHandler (loop player)
 

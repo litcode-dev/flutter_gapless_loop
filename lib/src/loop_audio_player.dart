@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
+import 'file_utils/file_utils.dart';
 
 /// A player for sample-accurate gapless audio looping on iOS, Android, macOS,
 /// and Windows.
@@ -164,15 +164,7 @@ class LoopAudioPlayer {
 
   Future<void> _loadFromBytesWithExtension(
       Uint8List bytes, String extension) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final tmp = File(
-        '${Directory.systemTemp.path}/flutter_gapless_$timestamp.$extension');
-    try {
-      await tmp.writeAsBytes(bytes, flush: true);
-      await loadFromFile(tmp.path);
-    } finally {
-      if (await tmp.exists()) await tmp.delete();
-    }
+    await getFileUtils().loadFromBytes(_playerId, bytes, extension, loadFromFile);
   }
 
   /// Starts looping playback from the beginning (or current loop region start).
