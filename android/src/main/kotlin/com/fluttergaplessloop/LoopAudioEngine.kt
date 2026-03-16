@@ -491,6 +491,236 @@ class LoopAudioEngine(private val context: Context) {
         }
     }
 
+    // ─── Private: fade coroutine ──────────────────────────────────────────────
+
+    /** Currently running fade job. Cancelled on each new [fadeTo] call. */
+    private var fadeJob: Job? = null
+
+    /** User-visible "local" volume, maintained so fade targets are consistent. */
+    @Volatile private var userVolume: Float = 1f
+
+    /**
+     * Ramps the [AudioTrack] software gain from its current level to [targetVolume]
+     * over [durationMs] milliseconds.
+     *
+     * The ramp runs in a coroutine on [engineScope] (~100 Hz update rate via `delay`).
+     * Pass [startFromSilence] = true to immediately zero the volume before ramping up.
+     */
+    fun fadeTo(targetVolume: Float, durationMs: Long, startFromSilence: Boolean = false) {
+        val from = if (startFromSilence) {
+            audioTrack?.setVolume(0f)
+            0f
+        } else {
+            userVolume
+        }
+        val to = targetVolume.coerceIn(0f, 1f)
+        userVolume = to
+
+        fadeJob?.cancel()
+        fadeJob = engineScope.launch {
+            if (durationMs <= 0L) {
+                audioTrack?.setVolume(to)
+                return@launch
+            }
+            val stepMs    = 10L          // ~100 Hz
+            val totalSteps = (durationMs / stepMs).toInt().coerceAtLeast(1)
+            for (step in 1..totalSteps) {
+                val t   = step.toFloat() / totalSteps.toFloat()
+                val vol = from + (to - from) * t
+                audioTrack?.setVolume(vol.coerceIn(0f, 1f))
+                kotlinx.coroutines.delay(stepMs)
+            }
+            audioTrack?.setVolume(to)
+        }
+    }
+
+    // ─── Public: Waveform / Analysis ─────────────────────────────────────────
+
+    /**
+     * Returns a downsampled peak-amplitude array with [resolution] data points.
+     *
+     * Each point is the maximum absolute sample magnitude in its segment, in [0, 1].
+     * Runs synchronously on the calling thread (expected to be called from a coroutine
+     * on [Dispatchers.Default]).
+     */
+    fun getWaveformData(resolution: Int): FloatArray {
+        val buf = pcmBuffer ?: return FloatArray(0)
+        val r   = resolution.coerceIn(2, 8192)
+        val peaks = FloatArray(r)
+        val segFrames = totalFrames / r
+        for (seg in 0 until r) {
+            val startFrame = seg * segFrames
+            val endFrame   = if (seg == r - 1) totalFrames else startFrame + segFrames
+            var peak = 0f
+            for (frame in startFrame until endFrame) {
+                for (ch in 0 until channelCount) {
+                    val s = buf[frame * channelCount + ch]
+                    val abs = if (s < 0f) -s else s
+                    if (abs > peak) peak = abs
+                }
+            }
+            peaks[seg] = peak.coerceIn(0f, 1f)
+        }
+        return peaks
+    }
+
+    /**
+     * Scans the loaded file for silence below [thresholdDb] dBFS and returns
+     * the start and end of the non-silent region in seconds.
+     *
+     * If the entire file is below threshold, returns (0.0, duration).
+     */
+    fun detectSilence(thresholdDb: Float): Pair<Double, Double> {
+        val buf = pcmBuffer ?: return Pair(0.0, duration)
+        val threshold = Math.pow(10.0, thresholdDb / 20.0).toFloat()
+
+        fun isAudible(frame: Int): Boolean {
+            for (ch in 0 until channelCount) {
+                val s = buf[frame * channelCount + ch]
+                if ((if (s < 0f) -s else s) >= threshold) return true
+            }
+            return false
+        }
+
+        var startFrame = 0
+        for (i in 0 until totalFrames) {
+            if (isAudible(i)) { startFrame = i; break }
+        }
+        var endFrame = totalFrames - 1
+        for (i in totalFrames - 1 downTo 0) {
+            if (isAudible(i)) { endFrame = i; break }
+        }
+
+        return Pair(
+            startFrame.toDouble() / sampleRate.toDouble(),
+            (endFrame + 1).toDouble() / sampleRate.toDouble()
+        )
+    }
+
+    /**
+     * Computes integrated loudness in LUFS using EBU R128 K-weighting.
+     * Returns -100.0 if no file is loaded or the file is silent.
+     */
+    fun getLoudness(): Double {
+        val buf = pcmBuffer ?: return -100.0
+        return LoudnessAnalyser.analyse(buf, sampleRate, channelCount)
+    }
+
+    /**
+     * Starts playback at a future wall-clock time [targetUptimeMs] (from
+     * [android.os.SystemClock.uptimeMillis]).
+     *
+     * The write thread sleeps until [targetUptimeMs] before writing its first
+     * chunk, ensuring sample-accurate alignment with other players that receive
+     * the same target time.
+     */
+    fun syncPlay(targetUptimeMs: Long) {
+        if (_state != EngineState.Ready && _state != EngineState.Stopped) {
+            Log.w(TAG, "syncPlay() ignored: state=$_state")
+            return
+        }
+        if (!sessionManager.requestAudioFocus()) {
+            onError?.invoke(LoopEngineError.AudioFocusDenied("AudioManager denied AUDIOFOCUS_GAIN"))
+            return
+        }
+        currentFrameAtomic.set(loopStartFrame.toLong())
+        audioTrack?.play()
+        applyPlaybackParams()
+        startSyncWriteThread(targetUptimeMs)
+        setState(EngineState.Playing)
+    }
+
+    /** Like [startWriteThread] but sleeps until [targetUptimeMs] before writing. */
+    private fun startSyncWriteThread(targetUptimeMs: Long) {
+        stopRequested  = false
+        pauseRequested = false
+        lastAmplitudeTimeMs = 0
+
+        writeThread = Thread {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+
+            // Sleep until the target time.
+            val nowMs = android.os.SystemClock.uptimeMillis()
+            val sleepMs = targetUptimeMs - nowMs
+            if (sleepMs > 0) {
+                try { Thread.sleep(sleepMs) } catch (_: InterruptedException) {}
+            }
+
+            // Delegate to the normal write loop by calling startWriteThread's inner logic.
+            // We reuse the write logic by immediately delegating after the sleep.
+            val track = audioTrack ?: return@Thread
+            val buffer = pcmBuffer ?: return@Thread
+            val chunkFrames  = track.bufferSizeInFrames / 2
+            val chunkSamples = chunkFrames * channelCount
+            val writeBuffer  = FloatArray(chunkSamples)
+
+            try {
+                while (!stopRequested) {
+                    if (pauseRequested) {
+                        try { pauseSemaphore.acquire() } catch (e: InterruptedException) { break }
+                        if (stopRequested) break
+                        continue
+                    }
+
+                    val region      = loopRegionRef.get()
+                    val regionStart = region.start
+                    val regionEnd   = region.end
+                    var currentFrame = currentFrameAtomic.get().toInt()
+
+                    var writeIdx = 0
+                    while (writeIdx < chunkSamples && !stopRequested && !pauseRequested) {
+                        if (currentFrame >= regionEnd) {
+                            val cfBlock = crossfadeBlockRef.get()
+                            if (cfBlock != null && writeIdx + cfBlock.size <= chunkSamples) {
+                                cfBlock.copyInto(writeBuffer, writeIdx)
+                                writeIdx += cfBlock.size
+                            }
+                            currentFrame = regionStart
+                        }
+                        val framesUntilEnd  = regionEnd - currentFrame
+                        val samplesUntilEnd = framesUntilEnd * channelCount
+                        val samplesNeeded   = chunkSamples - writeIdx
+                        val samplesToCopy   = minOf(samplesNeeded, samplesUntilEnd)
+                        val srcOffset = currentFrame * channelCount
+                        buffer.copyInto(writeBuffer, writeIdx, srcOffset, srcOffset + samplesToCopy)
+                        writeIdx     += samplesToCopy
+                        currentFrame += samplesToCopy / channelCount
+                    }
+                    currentFrameAtomic.set(currentFrame.toLong())
+
+                    if (writeIdx > 0) {
+                        val written = track.write(writeBuffer, 0, writeIdx, AudioTrack.WRITE_BLOCKING)
+                        if (written < 0) {
+                            val err = LoopEngineError.AudioTrackError(written)
+                            engineScope.launch { setState(EngineState.Error(err)); onError?.invoke(err) }
+                            break
+                        }
+                        val amplitudeCallback = onAmplitude
+                        if (amplitudeCallback != null) {
+                            val nowMs2 = System.currentTimeMillis()
+                            if (nowMs2 - lastAmplitudeTimeMs >= 50) {
+                                lastAmplitudeTimeMs = nowMs2
+                                var sumSq = 0f; var peak = 0f
+                                for (i in 0 until writeIdx) {
+                                    val s = writeBuffer[i]
+                                    sumSq += s * s
+                                    val abs = if (s < 0f) -s else s
+                                    if (abs > peak) peak = abs
+                                }
+                                val rms = kotlin.math.sqrt(sumSq / writeIdx)
+                                engineScope.launch { amplitudeCallback(rms.coerceIn(0f,1f), peak.coerceIn(0f,1f)) }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "SyncWrite thread exception: ${e.message}", e)
+            }
+        }
+        writeThread?.isDaemon = true
+        writeThread?.start()
+    }
+
     /**
      * Seeks to [seconds] in the file.
      *

@@ -171,6 +171,68 @@ class AmplitudeEvent {
   );
 }
 
+/// Downsampled peak amplitudes returned by [LoopAudioPlayer.getWaveformData].
+///
+/// Each element in [peaks] is the maximum absolute sample magnitude in its
+/// corresponding segment, in `[0.0, 1.0]`. The number of segments equals the
+/// [resolution] passed to [LoopAudioPlayer.getWaveformData].
+class WaveformData {
+  /// Number of data points (segments). Equals the resolution requested.
+  final int resolution;
+
+  /// Peak amplitude for each segment, in `[0.0, 1.0]`.
+  final List<double> peaks;
+
+  const WaveformData({required this.resolution, required this.peaks});
+
+  factory WaveformData.fromMap(Map<Object?, Object?> map) {
+    final raw = (map['peaks'] as List<Object?>?) ?? const [];
+    return WaveformData(
+      resolution: (map['resolution'] as int? ?? raw.length),
+      peaks: raw.map((e) => (e as num).toDouble().clamp(0.0, 1.0)).toList(),
+    );
+  }
+}
+
+/// Result of [LoopAudioPlayer.detectSilence].
+///
+/// Describes the non-silent region within the loaded audio file.
+/// Use [start] and [end] with [LoopAudioPlayer.setLoopRegion] (or call
+/// [LoopAudioPlayer.trimSilence] which does this automatically).
+class SilenceInfo {
+  /// Start of the non-silent region in seconds.
+  final double start;
+
+  /// End of the non-silent region in seconds.
+  final double end;
+
+  /// Duration of the non-silent region in seconds.
+  double get duration => end - start;
+
+  const SilenceInfo({required this.start, required this.end});
+
+  factory SilenceInfo.fromMap(Map<Object?, Object?> map) => SilenceInfo(
+        start: (map['start'] as num? ?? 0).toDouble(),
+        end:   (map['end']   as num? ?? 0).toDouble(),
+      );
+}
+
+/// Integrated loudness result returned by [LoopAudioPlayer.getLoudness].
+///
+/// Uses the EBU R128 / ITU-R BS.1770-4 K-weighting algorithm.
+class LoudnessInfo {
+  /// Integrated loudness in LUFS (Loudness Units relative to Full Scale).
+  ///
+  /// A typical streaming target is -14 LUFS. Silence returns `-inf` (represented
+  /// as `-100.0` for practical purposes).
+  final double lufs;
+
+  const LoudnessInfo({required this.lufs});
+
+  factory LoudnessInfo.fromMap(Map<Object?, Object?> map) =>
+      LoudnessInfo(lufs: (map['lufs'] as num? ?? -100).toDouble());
+}
+
 /// The result of BPM/tempo detection on a loaded audio file.
 ///
 /// Emitted via [LoopAudioPlayer.bpmStream] after every successful load.

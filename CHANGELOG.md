@@ -1,4 +1,45 @@
 
+## 0.0.7
+
+### New features
+
+* **`LoopSyncGroup`** — Start any number of `LoopAudioPlayer` instances simultaneously with sample-accurate synchronisation. On iOS each player's `AVAudioPlayerNode` is scheduled to a shared `AVAudioTime` (via `mach_absolute_time()`); on Android all write threads sleep until a shared `SystemClock.uptimeMillis()` target. Usage: `await LoopSyncGroup([drums, bass]).playAll()`.
+
+* **Beat-synced seek** — Three pure-Dart helpers using the `BpmResult` from `bpmStream`:
+  - `seekToNearestBeat(position, bpmResult)` — seeks to the beat closest to a given position.
+  - `seekToBeat(index, bpmResult)` — seeks to beat number `index` (zero-based).
+  - `seekToBar(index, bpmResult)` — seeks to bar number `index` (zero-based).
+
+* **Count-in before play** (`playAfterCountIn`) — Waits for a running `MetronomePlayer` to complete `bars` bars, then calls `play()` at the precise beat boundary. Requires an already-started `MetronomePlayer`.
+
+* **Fade in / fade out / fade to** — Three methods for click-free volume ramps:
+  - `fadeTo(targetVolume, {duration})` — ramp to any target volume.
+  - `fadeIn({duration})` — ramp from silence to the current local volume.
+  - `fadeOut({duration})` — ramp from the current level to silence.
+  The ramp is driven natively (iOS: `DispatchSourceTimer` at 100 Hz; Android: coroutine `delay` at 100 Hz) so there is no Flutter-thread overhead.
+
+* **Waveform data extraction** (`getWaveformData({resolution})`) — Returns a `WaveformData` with `resolution` peak-amplitude data points in `[0.0, 1.0]`. Computed natively on a background thread. Suitable for drawing a waveform overview or scrubber.
+
+* **Silence detection / trim** — Two methods:
+  - `detectSilence({thresholdDb})` — returns a `SilenceInfo` with `start` and `end` seconds of the non-silent region.
+  - `trimSilence({thresholdDb})` — calls `setLoopRegion` automatically with the result of `detectSilence`. Non-destructive; does not modify the underlying PCM.
+
+* **LUFS loudness analysis & normalisation** — Two methods:
+  - `getLoudness()` — returns `LoudnessInfo.lufs` using the EBU R128 / ITU-R BS.1770-4 K-weighting two-biquad-stage algorithm.
+  - `normaliseLoudness({targetLufs})` — computes the gain delta between the measured LUFS and `targetLufs` (default −14 LUFS) and applies it via `setVolume`. Non-destructive.
+
+### New types
+
+* `WaveformData` class — `resolution`, `peaks` (List\<double>)
+* `SilenceInfo` class — `start`, `end`, `duration`
+* `LoudnessInfo` class — `lufs`
+* `LoopSyncGroup` class — `players`, `playAll()`, `pauseAll()`, `stopAll()`
+
+### Native changes
+
+* **iOS:** `LoopAudioEngine` gains `fadeTo(targetVolume:duration:startFromSilence:)`, `getWaveformData(resolution:)`, `detectSilence(thresholdDb:)`, `getLoudness()`, and `syncPlay(hostTime:)`. New `LoudnessAnalyser.swift` implements EBU R128 K-weighting biquad filter. `FlutterGaplessLoopPlugin` handles `syncPlay` before the per-player guard via `handleSyncPlay`.
+* **Android:** `LoopAudioEngine` gains `fadeTo()`, `getWaveformData()`, `detectSilence()`, `getLoudness()`, and `syncPlay()` / `startSyncWriteThread()`. New `LoudnessAnalyser.kt` mirrors the Swift implementation. `FlutterGaplessLoopPlugin` handles `syncPlay` via `handleSyncPlay`.
+
 ## 0.0.6
 
 ### New features

@@ -151,6 +151,12 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
     // ─── MethodChannel.MethodCallHandler ─────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: Result) {
+        // syncPlay takes an array of playerIds — handle before the single-id guard.
+        if (call.method == "syncPlay") {
+            handleSyncPlay(call, result)
+            return
+        }
+
         val playerId = call.argument<String>("playerId")
             ?: return result.error("INVALID_ARGS", "'playerId' is required", null)
 
@@ -301,6 +307,50 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            // ── Tier 2: Fade ──────────────────────────────────────────────────
+            "fadeTo" -> {
+                val targetVolume    = call.argument<Double>("targetVolume")?.toFloat()
+                    ?: return result.error("INVALID_ARGS", "'targetVolume' is required", null)
+                val durationMillis  = call.argument<Int>("durationMillis")?.toLong()
+                    ?: return result.error("INVALID_ARGS", "'durationMillis' is required", null)
+                val startFromSilence = call.argument<Boolean>("startFromSilence") ?: false
+                eng.fadeTo(targetVolume, durationMillis, startFromSilence)
+                result.success(null)
+            }
+
+            // ── Tier 2: Waveform ──────────────────────────────────────────────
+            "getWaveformData" -> {
+                val resolution = call.argument<Int>("resolution") ?: 400
+                pluginScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                    val peaks = eng.getWaveformData(resolution)
+                    val peakList = peaks.map { it.toDouble() }
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        result.success(mapOf("resolution" to peaks.size, "peaks" to peakList))
+                    }
+                }
+            }
+
+            // ── Tier 2: Silence detection ─────────────────────────────────────
+            "detectSilence" -> {
+                val thresholdDb = call.argument<Double>("thresholdDb")?.toFloat() ?: -60f
+                pluginScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                    val (start, end) = eng.detectSilence(thresholdDb)
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        result.success(mapOf("start" to start, "end" to end))
+                    }
+                }
+            }
+
+            // ── Tier 2: Loudness ──────────────────────────────────────────────
+            "getLoudness" -> {
+                pluginScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                    val lufs = eng.getLoudness()
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        result.success(mapOf("lufs" to lufs))
+                    }
+                }
+            }
+
             "setNowPlayingInfo" -> {
                 activeNowPlayingId = playerId
                 nowPlayingManager?.setInfo(
@@ -426,6 +476,29 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                     else -> {}
                 }
             }
+        }
+    }
+
+    // ─── Sync Play ────────────────────────────────────────────────────────────
+
+    /**
+     * Handles `syncPlay`: starts multiple players simultaneously at a shared
+     * future `SystemClock.uptimeMillis()` target.
+     */
+    private fun handleSyncPlay(call: MethodCall, result: Result) {
+        val ids         = call.argument<List<String>>("playerIds")
+            ?: return result.error("INVALID_ARGS", "'playerIds' is required", null)
+        val lookaheadMs = call.argument<Int>("lookaheadMs")?.toLong() ?: 50L
+        val targetMs    = android.os.SystemClock.uptimeMillis() + lookaheadMs
+
+        try {
+            for (pid in ids) {
+                val eng = getOrCreateEngine(pid)
+                eng.syncPlay(targetMs)
+            }
+            result.success(null)
+        } catch (e: IllegalStateException) {
+            result.error("NOT_ATTACHED", e.message, null)
         }
     }
 

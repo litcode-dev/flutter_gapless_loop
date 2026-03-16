@@ -220,6 +220,13 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     /// Routes all Flutter method channel calls to the correct [LoopAudioEngine].
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let args = call.arguments as? [String: Any]
+
+        // syncPlay takes an array of playerIds, not a single one — handle separately.
+        if call.method == "syncPlay" {
+            handleSyncPlay(args: args, result: result)
+            return
+        }
+
         guard let pid = args?["playerId"] as? String else {
             DispatchQueue.main.async { result(FlutterError(
                 code: "INVALID_ARGS",
@@ -365,6 +372,38 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             eng.setPitch(Float(semitones))
             DispatchQueue.main.async { result(nil) }
 
+        // MARK: Tier 2 — Fade
+        case "fadeTo":
+            guard let targetVol = args?["targetVolume"] as? Double,
+                  let durMs     = args?["durationMillis"] as? Int else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'targetVolume' and 'durationMillis' are required", details: nil)) }
+                return
+            }
+            let startFromSilence = args?["startFromSilence"] as? Bool ?? false
+            eng.fadeTo(targetVolume: Float(targetVol),
+                       duration: Double(durMs) / 1000.0,
+                       startFromSilence: startFromSilence)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: Tier 2 — Waveform
+        case "getWaveformData":
+            let resolution = args?["resolution"] as? Int ?? 400
+            let peaks = eng.getWaveformData(resolution: resolution)
+            DispatchQueue.main.async {
+                result(["resolution": peaks.count, "peaks": peaks.map { Double($0) }])
+            }
+
+        // MARK: Tier 2 — Silence detection
+        case "detectSilence":
+            let thresholdDb = Float(args?["thresholdDb"] as? Double ?? -60.0)
+            let (start, end) = eng.detectSilence(thresholdDb: thresholdDb)
+            DispatchQueue.main.async { result(["start": start, "end": end]) }
+
+        // MARK: Tier 2 — Loudness
+        case "getLoudness":
+            let lufs = eng.getLoudness()
+            DispatchQueue.main.async { result(["lufs": lufs]) }
+
         case "setNowPlayingInfo":
             setNowPlayingInfo(args: args, playerId: pid)
             DispatchQueue.main.async { result(nil) }
@@ -476,6 +515,32 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         default:
             DispatchQueue.main.async { result(FlutterMethodNotImplemented) }
         }
+    }
+
+    // MARK: - Sync Play
+
+    /// Handles the `syncPlay` method, which does NOT require a single `playerId`
+    /// but instead takes an array of IDs via `playerIds`.
+    private func handleSyncPlay(args: [String: Any]?, result: @escaping FlutterResult) {
+        guard let ids       = args?["playerIds"] as? [String],
+              let lookaheadMs = args?["lookaheadMs"] as? Int else {
+            DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'playerIds' and 'lookaheadMs' are required", details: nil)) }
+            return
+        }
+
+        // Compute the shared AVAudioTime in mach_absolute_time ticks.
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        let nsPerTick = Double(info.numer) / Double(info.denom)
+        let lookaheadNs = UInt64(lookaheadMs) * 1_000_000
+        let lookaheadTicks = UInt64(Double(lookaheadNs) / nsPerTick)
+        let hostTime = mach_absolute_time() + lookaheadTicks
+
+        for pid in ids {
+            let eng = getOrCreateEngine(for: pid)
+            eng.syncPlay(hostTime: hostTime)
+        }
+        DispatchQueue.main.async { result(nil) }
     }
 
     // MARK: - Metronome Method Handler

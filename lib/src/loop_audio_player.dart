@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
+import 'metronome_player.dart';
 
 /// A player for sample-accurate gapless audio looping on iOS and Android.
 ///
@@ -371,6 +373,169 @@ class LoopAudioPlayer {
         'seek', {'playerId': _playerId, 'position': seconds});
   }
 
+  /// Seeks to the beat in [bpmResult] nearest to [position] seconds.
+  ///
+  /// Pure-Dart: no native round-trip. Equivalent to calling [seek] with the
+  /// closest beat timestamp from [BpmResult.beats].
+  ///
+  /// Does nothing if [bpmResult.beats] is empty.
+  Future<void> seekToNearestBeat(double position, BpmResult bpmResult) async {
+    if (bpmResult.beats.isEmpty) return;
+    final beats = bpmResult.beats;
+    double nearest = beats[0];
+    double minDiff = (position - beats[0]).abs();
+    for (final b in beats) {
+      final diff = (position - b).abs();
+      if (diff < minDiff) { minDiff = diff; nearest = b; }
+    }
+    await seek(nearest);
+  }
+
+  /// Seeks to beat number [beatIndex] (zero-based) in [bpmResult].
+  ///
+  /// Clamps [beatIndex] to the valid range. Does nothing if [bpmResult.beats]
+  /// is empty.
+  Future<void> seekToBeat(int beatIndex, BpmResult bpmResult) async {
+    if (bpmResult.beats.isEmpty) return;
+    final idx = beatIndex.clamp(0, bpmResult.beats.length - 1);
+    await seek(bpmResult.beats[idx]);
+  }
+
+  /// Seeks to bar number [barIndex] (zero-based) in [bpmResult].
+  ///
+  /// Clamps [barIndex] to the valid range. Does nothing if [bpmResult.bars]
+  /// is empty.
+  Future<void> seekToBar(int barIndex, BpmResult bpmResult) async {
+    if (bpmResult.bars.isEmpty) return;
+    final idx = barIndex.clamp(0, bpmResult.bars.length - 1);
+    await seek(bpmResult.bars[idx]);
+  }
+
+  // ── Fades ─────────────────────────────────────────────────────────────────
+
+  /// Ramps the output volume from the current value to [targetVolume] over
+  /// [duration].
+  ///
+  /// [targetVolume] is clamped to `[0.0, 1.0]`. [duration] must be positive.
+  /// The ramp is handled entirely in the native audio thread for click-free
+  /// fades even at short durations.
+  ///
+  /// This method updates the player's local volume so that subsequent calls to
+  /// [LoopAudioMaster.setVolume] compute the effective volume correctly.
+  Future<void> fadeTo(double targetVolume,
+      {Duration duration = const Duration(milliseconds: 500)}) async {
+    _checkNotDisposed();
+    _localVolume = targetVolume.clamp(0.0, 1.0);
+    final targetEffective =
+        (_localVolume * LoopAudioMaster._masterVolume).clamp(0.0, 1.0);
+    await _channel.invokeMethod<void>('fadeTo', {
+      'playerId':       _playerId,
+      'targetVolume':   targetEffective,
+      'durationMillis': duration.inMilliseconds,
+    });
+  }
+
+  /// Fades volume from `0.0` to the current local volume over [duration].
+  ///
+  /// Useful for a smooth start when [play] or [resume] is called.
+  Future<void> fadeIn({Duration duration = const Duration(milliseconds: 500)}) async {
+    _checkNotDisposed();
+    final targetEffective =
+        (_localVolume * LoopAudioMaster._masterVolume).clamp(0.0, 1.0);
+    await _channel.invokeMethod<void>('fadeTo', {
+      'playerId':         _playerId,
+      'targetVolume':     targetEffective,
+      'durationMillis':   duration.inMilliseconds,
+      'startFromSilence': true,
+    });
+  }
+
+  /// Fades volume from the current level to `0.0` over [duration].
+  Future<void> fadeOut({Duration duration = const Duration(milliseconds: 500)}) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('fadeTo', {
+      'playerId':       _playerId,
+      'targetVolume':   0.0,
+      'durationMillis': duration.inMilliseconds,
+    });
+  }
+
+  // ── Analysis ───────────────────────────────────────────────────────────────
+
+  /// Returns a [WaveformData] with [resolution] data points.
+  ///
+  /// Each point is the peak absolute amplitude within its segment in `[0.0, 1.0]`.
+  /// Suitable for drawing a waveform overview. Computation is performed natively
+  /// on a background thread.
+  ///
+  /// [resolution] is clamped to `[2, 8192]`.
+  Future<WaveformData> getWaveformData({int resolution = 400}) async {
+    _checkNotDisposed();
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'getWaveformData', {
+      'playerId':   _playerId,
+      'resolution': resolution.clamp(2, 8192),
+    });
+    return WaveformData.fromMap(raw ?? {});
+  }
+
+  /// Scans the loaded audio for silence below [thresholdDb] and returns a
+  /// [SilenceInfo] describing the non-silent region.
+  ///
+  /// [thresholdDb] is the dBFS threshold (negative value, e.g. `-60.0`).
+  /// Samples below this level are considered silent.
+  ///
+  /// Computation is native and runs on a background thread.
+  Future<SilenceInfo> detectSilence({double thresholdDb = -60.0}) async {
+    _checkNotDisposed();
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'detectSilence', {
+      'playerId':    _playerId,
+      'thresholdDb': thresholdDb,
+    });
+    return SilenceInfo.fromMap(raw ?? {});
+  }
+
+  /// Detects leading/trailing silence and applies the non-silent region as the
+  /// loop region via [setLoopRegion].
+  ///
+  /// Equivalent to calling [detectSilence] then [setLoopRegion] with the result.
+  Future<void> trimSilence({double thresholdDb = -60.0}) async {
+    final info = await detectSilence(thresholdDb: thresholdDb);
+    if (info.duration > 0) {
+      await setLoopRegion(info.start, info.end);
+    }
+  }
+
+  /// Measures the integrated loudness of the loaded audio using the
+  /// EBU R128 / ITU-R BS.1770-4 K-weighting algorithm.
+  ///
+  /// Returns a [LoudnessInfo] with the result in LUFS. Computation is native
+  /// and runs synchronously on the calling coroutine/thread.
+  Future<LoudnessInfo> getLoudness() async {
+    _checkNotDisposed();
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'getLoudness', {'playerId': _playerId});
+    return LoudnessInfo.fromMap(raw ?? {});
+  }
+
+  /// Normalises playback volume so the perceived loudness matches
+  /// [targetLufs] (default `-14.0` LUFS, a common streaming target).
+  ///
+  /// Calls [getLoudness], computes the gain delta, and applies it via
+  /// [setVolume]. This is a non-destructive gain adjustment — the underlying
+  /// audio is not modified.
+  ///
+  /// Returns immediately without changing volume if the audio is silent
+  /// (LUFS ≤ -70.0).
+  Future<void> normaliseLoudness({double targetLufs = -14.0}) async {
+    final info = await getLoudness();
+    if (info.lufs <= -70.0) return; // silence — skip
+    final gainDb    = targetLufs - info.lufs;
+    final gainLinear = _dbToLinear(gainDb);
+    await setVolume((_localVolume * gainLinear).clamp(0.0, 1.0));
+  }
+
   // ── Position / duration ───────────────────────────────────────────────────
 
   /// Returns the total duration of the loaded file.
@@ -427,6 +592,46 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('clearNowPlayingInfo', {'playerId': _playerId});
   }
 
+  // ── Count-in ──────────────────────────────────────────────────────────────
+
+  /// Starts [metronome] for [bars] bars, then calls [play] on this player at
+  /// the precise moment the count-in ends.
+  ///
+  /// Pure-Dart: listens to [MetronomePlayer.beatStream] to count [bars] × beats,
+  /// then calls [metronome.stop] and [play] on the next beat boundary.
+  ///
+  /// The metronome must be fully started (via [MetronomePlayer.start]) before
+  /// calling this method. [bpmResult] is used to derive [beatsPerBar] when
+  /// [MetronomePlayer.start]'s `beatsPerBar` has not been passed explicitly —
+  /// pass `beatsPerBar` directly to override.
+  ///
+  /// ```dart
+  /// final bpmResult = await player.bpmStream.first;
+  /// await metronome.start(bpm: bpmResult.bpm, beatsPerBar: bpmResult.beatsPerBar, ...);
+  /// await player.playAfterCountIn(metronome: metronome, bars: 1, beatsPerBar: bpmResult.beatsPerBar);
+  /// ```
+  Future<void> playAfterCountIn({
+    required MetronomePlayer metronome,
+    int bars = 1,
+    int beatsPerBar = 4,
+  }) async {
+    _checkNotDisposed();
+    final totalBeats = bars * beatsPerBar;
+    var beatCount = 0;
+    final completer = Completer<void>();
+    late StreamSubscription<int> sub;
+    sub = metronome.beatStream.listen((beat) async {
+      beatCount++;
+      if (beatCount >= totalBeats) {
+        await sub.cancel();
+        await metronome.stop();
+        if (!_isDisposed) play();
+        completer.complete();
+      }
+    });
+    return completer.future;
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /// Releases all native resources. This instance cannot be used after calling dispose.
@@ -437,6 +642,8 @@ class LoopAudioPlayer {
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
+
+  static double _dbToLinear(double db) => math.pow(10.0, db / 20.0).toDouble();
 
   PlayerState _parseState(String s) => switch (s) {
         'loading' => PlayerState.loading,

@@ -494,6 +494,171 @@ public class LoopAudioEngine {
         }
     }
 
+    /// Ramps the mixer volume from its current value to [targetVolume] over [duration].
+    ///
+    /// Uses a `DispatchSourceTimer` on `audioQueue` firing at ~100 Hz so the ramp
+    /// is handled entirely off the Flutter thread.  Pass `startFromSilence: true`
+    /// to immediately zero the volume before ramping up (fade-in).
+    ///
+    /// - Parameters:
+    ///   - targetVolume:     Target volume in [0.0, 1.0].
+    ///   - duration:         Total ramp duration.
+    ///   - startFromSilence: If `true`, volume is zeroed before ramping to [targetVolume].
+    public func fadeTo(targetVolume: Float, duration: TimeInterval, startFromSilence: Bool = false) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            if startFromSilence { self.mixerNode.outputVolume = 0.0 }
+            let from = self.mixerNode.outputVolume
+            let to   = max(0.0, min(1.0, targetVolume))
+            guard duration > 0, abs(to - from) > 0.001 else {
+                self.mixerNode.outputVolume = to
+                return
+            }
+            self._startFadeTimer(from: from, to: to, duration: duration)
+        }
+    }
+
+    // MARK: - Private: Fade Timer
+
+    private var fadeTimer: DispatchSourceTimer?
+
+    private func _startFadeTimer(from: Float, to: Float, duration: TimeInterval) {
+        fadeTimer?.cancel()
+        let stepHz:  Double = 100.0
+        let stepSec: Double = 1.0 / stepHz
+        let totalSteps = max(1, Int(duration * stepHz))
+        var step = 0
+
+        let timer = DispatchSource.makeTimerSource(queue: audioQueue)
+        timer.schedule(deadline: .now() + stepSec, repeating: stepSec)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            step += 1
+            let t = Float(step) / Float(totalSteps)
+            let vol = from + (to - from) * min(t, 1.0)
+            self.mixerNode.outputVolume = vol
+            if step >= totalSteps {
+                self.fadeTimer?.cancel()
+                self.fadeTimer = nil
+            }
+        }
+        fadeTimer = timer
+        timer.resume()
+    }
+
+    // MARK: - Public: Waveform / Analysis
+
+    /// Returns a downsampled peak-amplitude array with [resolution] data points.
+    ///
+    /// Each element is the maximum absolute sample in its segment, in `[0.0, 1.0]`.
+    /// If no file is loaded an empty array is returned.
+    ///
+    /// - Parameter resolution: Number of output data points (clamped to `[2, 8192]`).
+    public func getWaveformData(resolution: Int) -> [Float] {
+        let r = max(2, min(8192, resolution))
+        return audioQueue.sync { [weak self] -> [Float] in
+            guard let self, let buf = self.originalBuffer,
+                  let channelData = buf.floatChannelData else { return [] }
+            let totalFrames  = Int(buf.frameLength)
+            let channelCount = Int(buf.format.channelCount)
+            guard totalFrames > 0 else { return [] }
+
+            var peaks = [Float](repeating: 0, count: r)
+            let segFrames = totalFrames / r
+
+            for seg in 0..<r {
+                let startFrame = seg * segFrames
+                let endFrame   = seg == r - 1 ? totalFrames : startFrame + segFrames
+                var peak: Float = 0
+                for ch in 0..<channelCount {
+                    let data = channelData[ch]
+                    for i in startFrame..<endFrame {
+                        let abs = fabsf(data[i])
+                        if abs > peak { peak = abs }
+                    }
+                }
+                peaks[seg] = min(peak, 1.0)
+            }
+            return peaks
+        }
+    }
+
+    /// Scans the loaded file for silence below [thresholdDb] dBFS and returns
+    /// the start and end of the non-silent region in seconds.
+    ///
+    /// If the entire file is silent, returns `(0.0, duration)`.
+    ///
+    /// - Parameter thresholdDb: Silence threshold in dBFS (e.g. `-60.0`). Must be negative.
+    public func detectSilence(thresholdDb: Float) -> (start: TimeInterval, end: TimeInterval) {
+        let threshold = pow(10.0, thresholdDb / 20.0) as Float
+        return audioQueue.sync { [weak self] -> (TimeInterval, TimeInterval) in
+            guard let self, let buf = self.originalBuffer,
+                  let channelData = buf.floatChannelData else {
+                return (0.0, self?._fileDuration ?? 0.0)
+            }
+            let totalFrames  = Int(buf.frameLength)
+            let channelCount = Int(buf.format.channelCount)
+            let sampleRate   = buf.format.sampleRate
+            guard totalFrames > 0 else { return (0.0, self._fileDuration) }
+
+            // Helper: checks if any channel at [frame] is above [threshold].
+            func isAudible(_ frame: Int) -> Bool {
+                for ch in 0..<channelCount {
+                    if fabsf(channelData[ch][frame]) >= threshold { return true }
+                }
+                return false
+            }
+
+            // Scan from head for first audible frame.
+            var startFrame = 0
+            for i in 0..<totalFrames {
+                if isAudible(i) { startFrame = i; break }
+            }
+
+            // Scan from tail for last audible frame.
+            var endFrame = totalFrames - 1
+            for i in stride(from: totalFrames - 1, through: 0, by: -1) {
+                if isAudible(i) { endFrame = i; break }
+            }
+
+            let startSec = Double(startFrame) / sampleRate
+            let endSec   = Double(endFrame + 1) / sampleRate
+            return (startSec, endSec)
+        }
+    }
+
+    /// Computes the integrated loudness of the loaded file in LUFS using
+    /// EBU R128 / ITU-R BS.1770-4 K-weighting.
+    ///
+    /// Returns `-100.0` if no file is loaded or the file is silent.
+    public func getLoudness() -> Double {
+        return audioQueue.sync { [weak self] -> Double in
+            guard let self, let buf = self.originalBuffer else { return -100.0 }
+            return LoudnessAnalyser.analyse(buffer: buf)
+        }
+    }
+
+    /// Starts playback at a future `AVAudioTime` derived from [hostTime].
+    ///
+    /// [hostTime] is a `mach_absolute_time()` unit value. The plugin computes
+    /// this as `mach_absolute_time() + lookaheadMs_in_ticks` before calling
+    /// this method, ensuring all players in a sync group start at the same time.
+    public func syncPlay(hostTime: UInt64) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            guard self._state == .ready || self._state == .stopped else {
+                self.logger.warning("syncPlay() ignored: state=\(self._state.rawValue)")
+                return
+            }
+            self.scheduleForCurrentMode()
+            let startTime = AVAudioTime(hostTime: hostTime)
+            self.nodeA.play(at: startTime)
+            self.setState(.playing)
+            self.installAmplitudeTap()
+            self.logger.info("syncPlay: hostTime=\(hostTime)")
+        }
+    }
+
     /// Seeks to a position within the loaded file.
     ///
     /// In Modes A and B, seeking stops nodeA, plays the remaining frames of the

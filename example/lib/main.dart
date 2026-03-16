@@ -56,6 +56,12 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   AmplitudeEvent _amplitude = const AmplitudeEvent(rms: 0, peak: 0);
 
+  // Tier 2 state
+  WaveformData? _waveform;
+  LoudnessInfo? _loudness;
+  SilenceInfo?  _silenceInfo;
+  bool _analysisBusy = false;
+
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<String>? _errorSub;
   StreamSubscription<BpmResult>? _bpmSub;
@@ -147,6 +153,10 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _detectedBpm = 0.0;
         _manualBpm = 0.0;
         _bpmController.text = '';
+        _waveform = null;
+        _loudness = null;
+        _silenceInfo = null;
+        _analysisBusy = false;
       });
     } catch (e) {
       _onError(e.toString());
@@ -261,6 +271,49 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     setState(() => _pan = value);
     try {
       await _player.setPan(value);
+    } catch (e) {
+      _onError(e.toString());
+    }
+  }
+
+  Future<void> _runAnalysis() async {
+    if (!_isReady || _analysisBusy) return;
+    setState(() => _analysisBusy = true);
+    try {
+      final wf      = await _player.getWaveformData(resolution: 200);
+      final loud    = await _player.getLoudness();
+      final silence = await _player.detectSilence(thresholdDb: -60.0);
+      setState(() {
+        _waveform    = wf;
+        _loudness    = loud;
+        _silenceInfo = silence;
+      });
+    } catch (e) {
+      _onError(e.toString());
+    } finally {
+      setState(() => _analysisBusy = false);
+    }
+  }
+
+  Future<void> _trimSilence() async {
+    try {
+      await _player.trimSilence(thresholdDb: -60.0);
+      final silence = await _player.detectSilence(thresholdDb: -60.0);
+      setState(() {
+        _loopStart   = silence.start;
+        _loopEnd     = silence.end;
+        _silenceInfo = silence;
+      });
+    } catch (e) {
+      _onError(e.toString());
+    }
+  }
+
+  Future<void> _normaliseLoudness() async {
+    try {
+      await _player.normaliseLoudness(targetLufs: -14.0);
+      final loud = await _player.getLoudness();
+      setState(() => _loudness = loud);
     } catch (e) {
       _onError(e.toString());
     }
@@ -468,6 +521,114 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
             Text('Amplitude', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             _AmplitudeMeter(amplitude: _amplitude),
+
+            const Divider(),
+
+            // ── Fade Controls ──────────────────────────────────────
+            Text('Fade', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _isReady
+                      ? () => _player.fadeIn(
+                            duration: const Duration(milliseconds: 800))
+                      : null,
+                  icon: const Icon(Icons.trending_up, size: 16),
+                  label: const Text('Fade In'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _isReady
+                      ? () => _player.fadeOut(
+                            duration: const Duration(milliseconds: 800))
+                      : null,
+                  icon: const Icon(Icons.trending_down, size: 16),
+                  label: const Text('Fade Out'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _isReady
+                      ? () => _player.fadeTo(0.5,
+                            duration: const Duration(milliseconds: 600))
+                      : null,
+                  icon: const Icon(Icons.volume_down, size: 16),
+                  label: const Text('Fade → 50%'),
+                ),
+              ],
+            ),
+
+            const Divider(),
+
+            // ── Audio Analysis ──────────────────────────────────────
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Audio Analysis', style: Theme.of(context).textTheme.titleSmall),
+                ElevatedButton.icon(
+                  onPressed: _isReady && !_analysisBusy ? _runAnalysis : null,
+                  icon: _analysisBusy
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.analytics, size: 16),
+                  label: const Text('Analyse'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // Waveform
+            if (_waveform != null) ...[
+              Text('Waveform (${_waveform!.resolution} pts)',
+                  style: Theme.of(context).textTheme.labelSmall),
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 60,
+                child: CustomPaint(
+                  painter: _WaveformPainter(
+                    peaks: _waveform!.peaks,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // Loudness
+            if (_loudness != null) ...[
+              Row(
+                children: [
+                  Text('Loudness: ${_loudness!.lufs.toStringAsFixed(1)} LUFS',
+                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: _isReady ? _normaliseLoudness : null,
+                    child: const Text('Normalise to −14 LUFS'),
+                  ),
+                ],
+              ),
+            ],
+
+            // Silence info
+            if (_silenceInfo != null) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Non-silent: ${_silenceInfo!.start.toStringAsFixed(2)}s – '
+                      '${_silenceInfo!.end.toStringAsFixed(2)}s '
+                      '(${_silenceInfo!.duration.toStringAsFixed(2)}s)',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _isReady ? _trimSilence : null,
+                    child: const Text('Trim Silence'),
+                  ),
+                ],
+              ),
+            ],
 
             const Divider(),
 
@@ -1044,6 +1205,38 @@ class _LevelRow extends StatelessWidget {
       ],
     );
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Waveform Painter
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _WaveformPainter extends CustomPainter {
+  const _WaveformPainter({required this.peaks, required this.color});
+
+  final List<double> peaks;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (peaks.isEmpty) return;
+    final paint = Paint()
+      ..color = color.withOpacity(0.8)
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round;
+
+    final midY    = size.height / 2;
+    final barW    = size.width / peaks.length;
+
+    for (int i = 0; i < peaks.length; i++) {
+      final x   = i * barW + barW / 2;
+      final half = peaks[i] * midY;
+      canvas.drawLine(Offset(x, midY - half), Offset(x, midY + half), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WaveformPainter old) => old.peaks != peaks;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
