@@ -4,9 +4,15 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.PlaybackParams
+import android.media.audiofx.Equalizer
+import android.media.audiofx.PresetReverb
 import android.os.Build
 import android.os.Process
 import android.util.Log
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -131,6 +137,13 @@ class LoopAudioEngine(private val context: Context) {
      */
     var onSeekComplete: ((Double) -> Unit)? = null
 
+    /**
+     * Invoked with (magnitudes, sampleRate) FFT spectrum data approximately 10 times per second
+     * while the engine is playing. magnitudes is 256 normalised values in [0,1].
+     * Always called on the main thread.
+     */
+    var onSpectrum: ((FloatArray, Double) -> Unit)? = null
+
     // ─── Public read-only state ───────────────────────────────────────────────
 
     private var _state: EngineState = EngineState.Idle
@@ -207,6 +220,31 @@ class LoopAudioEngine(private val context: Context) {
 
     /** Last time (ms) an amplitude event was dispatched. Throttles to ~20 Hz. */
     @Volatile private var lastAmplitudeTimeMs: Long = 0
+
+    /** Last time (ms) a spectrum event was dispatched. Throttles to ~10 Hz. */
+    @Volatile private var lastSpectrumTimeMs: Long = 0
+
+    // ─── Tier 3: AudioFx effects ─────────────────────────────────────────────
+
+    /** Android Equalizer effect bound to the AudioTrack session. */
+    private var equalizer: Equalizer? = null
+
+    /** Android PresetReverb effect bound to the AudioTrack session. */
+    private var presetReverb: PresetReverb? = null
+
+    // Compressor state (pure software, applied per write chunk)
+    @Volatile private var compressorEnabled    = false
+    @Volatile private var compressorThreshold  = 0.25f   // linear, default -12 dBFS
+    @Volatile private var compressorMakeupGain = 1.0f
+    @Volatile private var compressorAttack     = 0.9f    // 1-frame coefficient
+    @Volatile private var compressorRelease    = 0.999f  // 1-frame coefficient
+    @Volatile private var compressorEnvelope   = 0f      // per-write-thread envelope follower
+
+    // Pre-allocated 1024-sample Hann window + FFT workspace (write thread only)
+    private val hannWindow   = FloatArray(1024) { i ->
+        (0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * i / 1023).toFloat()))
+    }
+    private val fftWorkBuf   = FloatArray(1024)  // mono mix + Hann applied
 
     private var writeThread: Thread? = null
     private var audioTrack: AudioTrack? = null
@@ -491,6 +529,190 @@ class LoopAudioEngine(private val context: Context) {
         }
     }
 
+    // ─── Tier 3: Effects API ──────────────────────────────────────────────────
+
+    /**
+     * Sets the 3-band EQ gains in dB.
+     *
+     * Maps to the three closest Android [Equalizer] bands:
+     * - bass   → lowest available band (≤200 Hz)
+     * - mid    → band nearest 1000 Hz
+     * - treble → highest available band (≥4000 Hz)
+     *
+     * Gain is clamped to [-12, +12] dB. No-op if the Equalizer is unavailable.
+     */
+    fun setEq(bassDb: Float, midDb: Float, trebleDb: Float) {
+        val eq = equalizer ?: return
+        try {
+            val nBands = eq.numberOfBands.toInt()
+            if (nBands < 1) return
+
+            // Android Equalizer uses milli-Bell (10ths of dB) units.
+            fun dbToMb(db: Float) = (db.coerceIn(-12f, 12f) * 100).toInt().toShort()
+
+            // Find indices for bass (lowest), mid (nearest 1kHz), treble (highest).
+            val bassBandIdx   = 0
+            val trebleBandIdx = nBands - 1
+            var midBandIdx    = nBands / 2
+            var bestMidDist   = Long.MAX_VALUE
+            for (i in 0 until nBands) {
+                val centerHz = eq.getBandFreqRange(i.toShort())[0] / 1000 // milliHz → Hz
+                val dist = kotlin.math.abs(centerHz - 1_000_000L)
+                if (dist < bestMidDist) { bestMidDist = dist; midBandIdx = i }
+            }
+
+            eq.setBandLevel(bassBandIdx.toShort(),   dbToMb(bassDb))
+            eq.setBandLevel(midBandIdx.toShort(),    dbToMb(midDb))
+            eq.setBandLevel(trebleBandIdx.toShort(), dbToMb(trebleDb))
+            eq.enabled = true
+        } catch (e: Exception) {
+            Log.w(TAG, "setEq failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Applies a reverb preset with a wet-mix percentage.
+     *
+     * [preset] is the iOS-compatible preset name ("none", "smallRoom", etc.).
+     * [wetMix] is in [0.0, 1.0]; 0.0 disables the effect.
+     *
+     * Android [PresetReverb] does not support a wet/dry mix — the effect is on/off.
+     * A wetMix of 0 or preset "none" disables the effect.
+     */
+    fun setReverb(preset: String, wetMix: Float) {
+        val rv = presetReverb ?: return
+        try {
+            if (preset == "none" || wetMix <= 0f) {
+                rv.enabled = false
+                return
+            }
+            val androidPreset: Short = when (preset) {
+                "smallRoom"  -> PresetReverb.PRESET_SMALLROOM
+                "mediumRoom" -> PresetReverb.PRESET_MEDIUMROOM
+                "largeRoom"  -> PresetReverb.PRESET_LARGEROOM
+                "mediumHall" -> PresetReverb.PRESET_MEDIUMHALL
+                "largeHall"  -> PresetReverb.PRESET_LARGEHALL
+                "plate"      -> PresetReverb.PRESET_PLATE
+                "cathedral"  -> PresetReverb.PRESET_LARGEHALL  // best match
+                else         -> PresetReverb.PRESET_NONE
+            }
+            rv.preset  = androidPreset
+            rv.enabled = androidPreset != PresetReverb.PRESET_NONE
+        } catch (e: Exception) {
+            Log.w(TAG, "setReverb failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Configures the software compressor/limiter applied per write chunk.
+     *
+     * Parameters are converted to per-sample attack/release coefficients using
+     * the standard 1-pole IIR formula: coeff = exp(-1 / (ms/1000 * sampleRate)).
+     *
+     * A ratio of ∞:1 (hard limiter) is used above [thresholdDb] for simplicity.
+     */
+    fun setCompressor(
+        enabled:      Boolean,
+        thresholdDb:  Float,
+        makeupGainDb: Float,
+        attackMs:     Float,
+        releaseMs:    Float
+    ) {
+        compressorEnabled    = enabled
+        compressorThreshold  = Math.pow(10.0, (thresholdDb.coerceIn(-40f, 0f) / 20.0)).toFloat()
+        compressorMakeupGain = Math.pow(10.0, (makeupGainDb.coerceIn(-20f, 20f) / 20.0)).toFloat()
+        val sr = sampleRate.toDouble()
+        compressorAttack  = if (attackMs  <= 0f) 0f else
+            Math.exp(-1.0 / (attackMs  / 1000.0 * sr)).toFloat()
+        compressorRelease = if (releaseMs <= 0f) 0f else
+            Math.exp(-1.0 / (releaseMs / 1000.0 * sr)).toFloat()
+    }
+
+    /**
+     * Exports the current loop region (or full file if no region set) as a 32-bit float WAV.
+     *
+     * Runs on [Dispatchers.IO]. [onComplete] is called on the main thread with
+     * `null` on success or an exception on failure.
+     */
+    fun exportToFile(outputPath: String, onComplete: (Exception?) -> Unit) {
+        val pcm = pcmBuffer
+        if (pcm == null) {
+            engineScope.launch { onComplete(IllegalStateException("No audio loaded")) }
+            return
+        }
+        val startFrame = loopStartFrame
+        val endFrame   = loopEndFrame
+        val sr         = sampleRate
+        val ch         = channelCount
+
+        engineScope.launch(Dispatchers.IO) {
+            try {
+                writeWavFile(
+                    path       = outputPath,
+                    pcm        = pcm,
+                    startFrame = startFrame,
+                    endFrame   = endFrame,
+                    sampleRate = sr,
+                    channels   = ch
+                )
+                withContext(Dispatchers.Main) { onComplete(null) }
+            } catch (e: Exception) {
+                Log.e(TAG, "exportToFile failed: ${e.message}", e)
+                withContext(Dispatchers.Main) { onComplete(e) }
+            }
+        }
+    }
+
+    /**
+     * Writes [pcm] samples from [startFrame] to [endFrame] as a 32-bit float WAV file.
+     */
+    private fun writeWavFile(
+        path: String, pcm: FloatArray,
+        startFrame: Int, endFrame: Int,
+        sampleRate: Int, channels: Int
+    ) {
+        val numFrames  = endFrame - startFrame
+        val numSamples = numFrames * channels
+        val dataBytes  = numSamples * 4  // 4 bytes per float32 sample
+
+        val file = File(path)
+        file.parentFile?.mkdirs()
+
+        RandomAccessFile(file, "rw").use { raf ->
+            // WAV header (44 bytes)
+            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            header.put("RIFF".toByteArray())
+            header.putInt(36 + dataBytes)         // chunk size
+            header.put("WAVE".toByteArray())
+            header.put("fmt ".toByteArray())
+            header.putInt(16)                     // subchunk size
+            header.putShort(3)                    // PCM float = 3
+            header.putShort(channels.toShort())
+            header.putInt(sampleRate)
+            header.putInt(sampleRate * channels * 4)  // byte rate
+            header.putShort((channels * 4).toShort())  // block align
+            header.putShort(32)                   // bits per sample
+            header.put("data".toByteArray())
+            header.putInt(dataBytes)
+            raf.write(header.array())
+
+            // PCM data — write in 8 kB chunks to avoid large heap allocation
+            val chunkSamples = 2048
+            val chunkBytes   = ByteBuffer.allocate(chunkSamples * 4).order(ByteOrder.LITTLE_ENDIAN)
+            var srcOffset    = startFrame * channels
+            var remaining    = numSamples
+            while (remaining > 0) {
+                val n = minOf(remaining, chunkSamples)
+                chunkBytes.clear()
+                for (i in 0 until n) chunkBytes.putFloat(pcm[srcOffset + i])
+                raf.write(chunkBytes.array(), 0, n * 4)
+                srcOffset += n
+                remaining -= n
+            }
+        }
+        Log.i(TAG, "exportToFile: wrote $numFrames frames to $path")
+    }
+
     // ─── Private: fade coroutine ──────────────────────────────────────────────
 
     /** Currently running fade job. Cancelled on each new [fadeTo] call. */
@@ -632,9 +854,11 @@ class LoopAudioEngine(private val context: Context) {
 
     /** Like [startWriteThread] but sleeps until [targetUptimeMs] before writing. */
     private fun startSyncWriteThread(targetUptimeMs: Long) {
-        stopRequested  = false
-        pauseRequested = false
+        stopRequested      = false
+        pauseRequested     = false
         lastAmplitudeTimeMs = 0
+        lastSpectrumTimeMs  = 0
+        compressorEnvelope  = 0f
 
         writeThread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -689,6 +913,7 @@ class LoopAudioEngine(private val context: Context) {
                     currentFrameAtomic.set(currentFrame.toLong())
 
                     if (writeIdx > 0) {
+                        applyCompressor(writeBuffer, writeIdx)
                         val written = track.write(writeBuffer, 0, writeIdx, AudioTrack.WRITE_BLOCKING)
                         if (written < 0) {
                             val err = LoopEngineError.AudioTrackError(written)
@@ -709,6 +934,14 @@ class LoopAudioEngine(private val context: Context) {
                                 }
                                 val rms = kotlin.math.sqrt(sumSq / writeIdx)
                                 engineScope.launch { amplitudeCallback(rms.coerceIn(0f,1f), peak.coerceIn(0f,1f)) }
+                            }
+                        }
+                        val spectrumCallback2 = onSpectrum
+                        if (spectrumCallback2 != null) {
+                            val spectrum2 = computeSpectrum(writeBuffer, writeIdx, channelCount)
+                            if (spectrum2 != null) {
+                                val sr = sampleRate.toDouble()
+                                engineScope.launch { spectrumCallback2(spectrum2, sr) }
                             }
                         }
                     }
@@ -746,6 +979,8 @@ class LoopAudioEngine(private val context: Context) {
     fun dispose() {
         stopWriteThread()
         sessionManager.dispose()
+        equalizer?.release();    equalizer   = null
+        presetReverb?.release(); presetReverb = null
         audioTrack?.release()
         audioTrack = null
         bpmJob?.cancel()
@@ -816,8 +1051,43 @@ class LoopAudioEngine(private val context: Context) {
             .build()
 
         Log.i(TAG, "AudioTrack built: ${sampleRate}Hz ${channelCount}ch buf=${bufBytes}B")
-        applyPan() // Restore pan setting after AudioTrack recreation
-        applyPlaybackParams() // Restore playback rate + pitch after AudioTrack recreation
+        applyPan()
+        applyPlaybackParams()
+        reattachEffects()
+    }
+
+    /**
+     * Releases and re-creates [Equalizer] and [PresetReverb] bound to the new [audioTrack]
+     * session ID. Must be called every time [buildAudioTrack] creates a new [AudioTrack]
+     * because effects are bound to a specific session at construction time.
+     */
+    private fun reattachEffects() {
+        val track = audioTrack ?: return
+        val sessionId = track.audioSessionId
+
+        // Equalizer
+        try {
+            equalizer?.release()
+            equalizer = Equalizer(0, sessionId).also { eq ->
+                eq.enabled = true
+                // Store current band gains to reapply (they reset to 0 when re-created)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Equalizer init failed: ${e.message}")
+            equalizer = null
+        }
+
+        // PresetReverb
+        try {
+            presetReverb?.release()
+            presetReverb = PresetReverb(0, sessionId).also { rv ->
+                rv.preset = PresetReverb.PRESET_NONE
+                rv.enabled = false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "PresetReverb init failed: ${e.message}")
+            presetReverb = null
+        }
     }
 
     // ─── Private: write thread ────────────────────────────────────────────────
@@ -835,9 +1105,11 @@ class LoopAudioEngine(private val context: Context) {
      * 7. Exits when [stopRequested] is true.
      */
     private fun startWriteThread() {
-        stopRequested      = false
-        pauseRequested     = false
+        stopRequested       = false
+        pauseRequested      = false
         lastAmplitudeTimeMs = 0
+        lastSpectrumTimeMs  = 0
+        compressorEnvelope  = 0f
 
         writeThread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -910,6 +1182,9 @@ class LoopAudioEngine(private val context: Context) {
                     // WRITE_BLOCKING: blocks until AudioTrack consumes all data.
                     // Never use WRITE_NON_BLOCKING — partial writes break the loop.
                     if (writeIdx > 0) {
+                        // ── Apply software compressor before write ──────────────
+                        applyCompressor(writeBuffer, writeIdx)
+
                         val written = track.write(writeBuffer, 0, writeIdx, AudioTrack.WRITE_BLOCKING)
                         if (written < 0) {
                             val err = LoopEngineError.AudioTrackError(written)
@@ -941,6 +1216,16 @@ class LoopAudioEngine(private val context: Context) {
                                 engineScope.launch {
                                     amplitudeCallback(rmsC, peakC)
                                 }
+                            }
+                        }
+
+                        // ── Spectrum FFT (~10 Hz) ──────────────────────────────
+                        val spectrumCallback = onSpectrum
+                        if (spectrumCallback != null) {
+                            val spectrum = computeSpectrum(writeBuffer, writeIdx, channelCount)
+                            if (spectrum != null) {
+                                val sr = sampleRate.toDouble()
+                                engineScope.launch { spectrumCallback(spectrum, sr) }
                             }
                         }
                     }
@@ -980,6 +1265,114 @@ class LoopAudioEngine(private val context: Context) {
         }
         writeThread = null
         audioTrack?.pause()
+    }
+
+    // ─── Private: Cooley-Tukey FFT ────────────────────────────────────────────
+
+    /**
+     * In-place iterative Cooley-Tukey radix-2 DIT FFT.
+     *
+     * @param re Real parts array. Size must be a power of 2.
+     * @param im Imaginary parts array, same size as [re]. Typically all zeros for real input.
+     *
+     * After this call, re[k] and im[k] contain the real and imaginary parts of bin k.
+     * Only the first N/2 bins are useful for real-input FFT (mirrored above N/2).
+     */
+    private fun fft(re: FloatArray, im: FloatArray) {
+        val n = re.size
+        // Bit-reversal permutation
+        var j = 0
+        for (i in 1 until n) {
+            var bit = n shr 1
+            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
+            j = j xor bit
+            if (i < j) {
+                var t = re[i]; re[i] = re[j]; re[j] = t
+                t = im[i]; im[i] = im[j]; im[j] = t
+            }
+        }
+        // Danielson-Lanczos butterfly
+        var len = 2
+        while (len <= n) {
+            val ang = (-2.0 * Math.PI / len).toFloat()
+            val wRe = kotlin.math.cos(ang.toDouble()).toFloat()
+            val wIm = kotlin.math.sin(ang.toDouble()).toFloat()
+            var i = 0
+            while (i < n) {
+                var curRe = 1f; var curIm = 0f
+                for (k in 0 until len / 2) {
+                    val uRe = re[i + k];          val uIm = im[i + k]
+                    val vRe = re[i + k + len / 2]; val vIm = im[i + k + len / 2]
+                    val tRe = curRe * vRe - curIm * vIm
+                    val tIm = curRe * vIm + curIm * vRe
+                    re[i + k]          = uRe + tRe; im[i + k]          = uIm + tIm
+                    re[i + k + len / 2] = uRe - tRe; im[i + k + len / 2] = uIm - tIm
+                    val nextRe = curRe * wRe - curIm * wIm
+                    curIm      = curRe * wIm + curIm * wRe
+                    curRe      = nextRe
+                }
+                i += len
+            }
+            len = len shl 1
+        }
+    }
+
+    /**
+     * Applies the software compressor to [buf] in-place (first [count] samples).
+     * No-op if [compressorEnabled] is false.
+     */
+    private fun applyCompressor(buf: FloatArray, count: Int) {
+        if (!compressorEnabled) return
+        val threshold  = compressorThreshold
+        val makeupGain = compressorMakeupGain
+        val atk        = compressorAttack
+        val rel        = compressorRelease
+        var env        = compressorEnvelope
+        for (i in 0 until count) {
+            val absS = if (buf[i] < 0f) -buf[i] else buf[i]
+            env = if (absS > env) atk * env + (1f - atk) * absS
+                  else            rel * env + (1f - rel) * absS
+            val gain = if (env > threshold) threshold / env else 1f
+            buf[i] = buf[i] * gain * makeupGain
+        }
+        compressorEnvelope = env
+    }
+
+    /**
+     * Computes a 256-bin FFT magnitude spectrum from the first [count] samples of [buf]
+     * (interleaved [channels] channels), throttled to ~10 Hz.
+     *
+     * Returns null if not enough time has elapsed since [lastSpectrumTimeMs].
+     */
+    private fun computeSpectrum(buf: FloatArray, count: Int, channels: Int): FloatArray? {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastSpectrumTimeMs < 100) return null
+        lastSpectrumTimeMs = nowMs
+
+        val n        = minOf(count, 1024)
+        val fftRe    = fftWorkBuf   // re-use pre-allocated buffer
+        val fftIm    = FloatArray(1024)
+
+        // Mix to mono, apply Hann window
+        for (i in 0 until n) {
+            var s = 0f
+            val base = i * channels
+            for (ch in 0 until channels) s += if (base + ch < buf.size) buf[base + ch] else 0f
+            fftRe[i] = s / channels * hannWindow[i]
+            fftIm[i] = 0f
+        }
+        for (i in n until 1024) { fftRe[i] = 0f; fftIm[i] = 0f }
+
+        fft(fftRe, fftIm)
+
+        // Average adjacent bins into 256 output bins (from first 512 bins)
+        val out = FloatArray(256)
+        for (i in 0 until 256) {
+            val mag0 = kotlin.math.sqrt((fftRe[i*2].toDouble().let { it*it } + fftIm[i*2].toDouble().let { it*it })) / 512.0
+            val mag1 = kotlin.math.sqrt((fftRe[i*2+1].toDouble().let { it*it } + fftIm[i*2+1].toDouble().let { it*it })) / 512.0
+            out[i] = ((mag0 + mag1) * 0.5).coerceIn(0.0, 1.0).toFloat()
+        }
+        return out
     }
 
     // ─── Private: zero-crossing detection ────────────────────────────────────

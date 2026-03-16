@@ -58,6 +58,15 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   // Tier 2 state
   WaveformData? _waveform;
+
+  // Tier 3 state
+  SpectrumData? _spectrum;
+  EqSettings _eq = EqSettings.flat;
+  ReverbPreset _reverbPreset = ReverbPreset.none;
+  double _reverbWetMix = 0.0;
+  CompressorSettings _compressor = const CompressorSettings(enabled: false);
+  bool _exportBusy = false;
+  StreamSubscription<SpectrumData>? _spectrumSub;
   LoudnessInfo? _loudness;
   SilenceInfo?  _silenceInfo;
   bool _analysisBusy = false;
@@ -75,6 +84,9 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     _errorSub = _player.errorStream.listen(_onError);
     _ampSub   = _player.amplitudeStream.listen((a) {
       setState(() => _amplitude = a);
+    });
+    _spectrumSub = _player.spectrumStream.listen((s) {
+      setState(() => _spectrum = s);
     });
     _bpmSub = _player.bpmStream.listen((r) {
       setState(() {
@@ -95,6 +107,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     _errorSub?.cancel();
     _bpmSub?.cancel();
     _ampSub?.cancel();
+    _spectrumSub?.cancel();
     _positionTimer?.cancel();
     _bpmRepeatTimer?.cancel();
     _bpmController.dispose();
@@ -157,6 +170,12 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
         _loudness = null;
         _silenceInfo = null;
         _analysisBusy = false;
+        _spectrum = null;
+        _eq = EqSettings.flat;
+        _reverbPreset = ReverbPreset.none;
+        _reverbWetMix = 0.0;
+        _compressor = const CompressorSettings(enabled: false);
+        _exportBusy = false;
       });
     } catch (e) {
       _onError(e.toString());
@@ -317,6 +336,46 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
     } catch (e) {
       _onError(e.toString());
     }
+  }
+
+  Future<void> _setEq(EqSettings eq) async {
+    setState(() => _eq = eq);
+    try { await _player.setEq(eq); } catch (e) { _onError(e.toString()); }
+  }
+
+  Future<void> _setReverb(ReverbPreset preset, double wetMix) async {
+    setState(() { _reverbPreset = preset; _reverbWetMix = wetMix; });
+    try { await _player.setReverb(preset, wetMix: wetMix); } catch (e) { _onError(e.toString()); }
+  }
+
+  Future<void> _setCompressor(CompressorSettings settings) async {
+    setState(() => _compressor = settings);
+    try { await _player.setCompressor(settings); } catch (e) { _onError(e.toString()); }
+  }
+
+  Future<void> _exportWav() async {
+    if (!_isReady || _exportBusy) return;
+    setState(() => _exportBusy = true);
+    try {
+      final dir = await _getTempDir();
+      final path = '$dir/exported_loop.wav';
+      await _player.exportToFile(path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Exported to $path')),
+        );
+      }
+    } catch (e) {
+      _onError(e.toString());
+    } finally {
+      setState(() => _exportBusy = false);
+    }
+  }
+
+  Future<String> _getTempDir() async {
+    // Returns a writable temp directory path cross-platform.
+    // For a production app use path_provider; we use a simple fallback here.
+    return '/tmp';
   }
 
   bool get _isReady =>
@@ -770,6 +829,218 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                 ),
               ],
             ),
+
+            const Divider(),
+
+            // ── Tier 3: EQ ─────────────────────────────────────────────
+            const Divider(),
+            Text('EQ', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            _EqBandRow(
+              label: 'Bass\n(80Hz)',
+              value: _eq.bass,
+              onChanged: _isReady
+                  ? (v) => _setEq(EqSettings(bass: v, mid: _eq.mid, treble: _eq.treble))
+                  : null,
+            ),
+            _EqBandRow(
+              label: 'Mid\n(1kHz)',
+              value: _eq.mid,
+              onChanged: _isReady
+                  ? (v) => _setEq(EqSettings(bass: _eq.bass, mid: v, treble: _eq.treble))
+                  : null,
+            ),
+            _EqBandRow(
+              label: 'Treble\n(10kHz)',
+              value: _eq.treble,
+              onChanged: _isReady
+                  ? (v) => _setEq(EqSettings(bass: _eq.bass, mid: _eq.mid, treble: v))
+                  : null,
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: _isReady ? () => _setEq(EqSettings.flat) : null,
+                child: const Text('Reset EQ'),
+              ),
+            ),
+
+            // ── Tier 3: Reverb ──────────────────────────────────────────
+            const Divider(),
+            Text('Reverb', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Row(children: [
+              const SizedBox(width: 60, child: Text('Preset')),
+              Expanded(
+                child: DropdownButton<ReverbPreset>(
+                  value: _reverbPreset,
+                  isExpanded: true,
+                  items: ReverbPreset.values.map((p) =>
+                    DropdownMenuItem(value: p, child: Text(p.name))).toList(),
+                  onChanged: _isReady
+                      ? (p) { if (p != null) _setReverb(p, _reverbWetMix); }
+                      : null,
+                ),
+              ),
+            ]),
+            if (_reverbPreset != ReverbPreset.none) ...[
+              Row(children: [
+                const SizedBox(width: 60, child: Text('Wet')),
+                Expanded(
+                  child: Slider(
+                    value: _reverbWetMix,
+                    min: 0.0, max: 1.0, divisions: 100,
+                    onChanged: _isReady
+                        ? (v) => _setReverb(_reverbPreset, v)
+                        : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 40,
+                  child: Text('${(_reverbWetMix * 100).toStringAsFixed(0)}%',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.right),
+                ),
+              ]),
+            ],
+
+            // ── Tier 3: Compressor ──────────────────────────────────────
+            const Divider(),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('Compressor', style: Theme.of(context).textTheme.titleSmall),
+              Switch(
+                value: _compressor.enabled,
+                onChanged: _isReady
+                    ? (v) => _setCompressor(CompressorSettings(
+                          enabled: v,
+                          thresholdDb: _compressor.thresholdDb,
+                          makeupGainDb: _compressor.makeupGainDb,
+                          attackMs: _compressor.attackMs,
+                          releaseMs: _compressor.releaseMs,
+                        ))
+                    : null,
+              ),
+            ]),
+            if (_compressor.enabled) ...[
+              _CompSliderRow(
+                label: 'Thresh',
+                value: _compressor.thresholdDb,
+                min: -40, max: 0, unit: 'dB',
+                onChanged: _isReady
+                    ? (v) => _setCompressor(CompressorSettings(
+                          enabled: true,
+                          thresholdDb: v,
+                          makeupGainDb: _compressor.makeupGainDb,
+                          attackMs: _compressor.attackMs,
+                          releaseMs: _compressor.releaseMs,
+                        ))
+                    : null,
+              ),
+              _CompSliderRow(
+                label: 'Makeup',
+                value: _compressor.makeupGainDb,
+                min: -20, max: 20, unit: 'dB',
+                onChanged: _isReady
+                    ? (v) => _setCompressor(CompressorSettings(
+                          enabled: true,
+                          thresholdDb: _compressor.thresholdDb,
+                          makeupGainDb: v,
+                          attackMs: _compressor.attackMs,
+                          releaseMs: _compressor.releaseMs,
+                        ))
+                    : null,
+              ),
+              _CompSliderRow(
+                label: 'Attack',
+                value: _compressor.attackMs,
+                min: 1, max: 200, unit: 'ms',
+                onChanged: _isReady
+                    ? (v) => _setCompressor(CompressorSettings(
+                          enabled: true,
+                          thresholdDb: _compressor.thresholdDb,
+                          makeupGainDb: _compressor.makeupGainDb,
+                          attackMs: v,
+                          releaseMs: _compressor.releaseMs,
+                        ))
+                    : null,
+              ),
+              _CompSliderRow(
+                label: 'Release',
+                value: _compressor.releaseMs,
+                min: 10, max: 3000, unit: 'ms',
+                onChanged: _isReady
+                    ? (v) => _setCompressor(CompressorSettings(
+                          enabled: true,
+                          thresholdDb: _compressor.thresholdDb,
+                          makeupGainDb: _compressor.makeupGainDb,
+                          attackMs: _compressor.attackMs,
+                          releaseMs: v,
+                        ))
+                    : null,
+              ),
+            ],
+
+            // ── Tier 3: Spectrum Visualizer ─────────────────────────────
+            const Divider(),
+            Text('Spectrum', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            SizedBox(
+              height: 80,
+              child: _spectrum != null
+                  ? CustomPaint(
+                      painter: _SpectrumPainter(
+                        magnitudes: _spectrum!.magnitudes,
+                        color: Theme.of(context).colorScheme.tertiary,
+                      ),
+                      child: const SizedBox.expand(),
+                    )
+                  : Center(
+                      child: Text(
+                        _state == PlayerState.playing
+                            ? 'Waiting for spectrum data...'
+                            : 'Play audio to see spectrum',
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: Colors.grey),
+                      ),
+                    ),
+            ),
+
+            // ── Tier 3: A-B Loop + Export ───────────────────────────────
+            const Divider(),
+            Text('A-B Loop & Export', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              ElevatedButton(
+                onPressed: _isReady
+                    ? () async { await _player.saveLoopPointA(); }
+                    : null,
+                child: const Text('Save A'),
+              ),
+              ElevatedButton(
+                onPressed: _isReady
+                    ? () async { await _player.saveLoopPointB(); }
+                    : null,
+                child: const Text('Save B'),
+              ),
+              ElevatedButton(
+                onPressed: _isReady
+                    ? () async {
+                        try { await _player.recallABLoop(); }
+                        catch (e) { _onError(e.toString()); }
+                      }
+                    : null,
+                child: const Text('Recall A→B'),
+              ),
+              ElevatedButton.icon(
+                onPressed: _isReady && !_exportBusy ? _exportWav : null,
+                icon: _exportBusy
+                    ? const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.download, size: 16),
+                label: const Text('Export WAV'),
+              ),
+            ]),
 
             const Divider(),
 
@@ -1237,6 +1508,116 @@ class _WaveformPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_WaveformPainter old) => old.peaks != peaks;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tier 3 widgets
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _EqBandRow extends StatelessWidget {
+  const _EqBandRow({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final ValueChanged<double>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(children: [
+      SizedBox(
+        width: 64,
+        child: Text(label,
+            style: Theme.of(context).textTheme.bodySmall,
+            textAlign: TextAlign.center),
+      ),
+      Expanded(
+        child: Slider(
+          value: value,
+          min: -12, max: 12, divisions: 48,
+          onChanged: onChanged,
+        ),
+      ),
+      SizedBox(
+        width: 46,
+        child: Text(
+          '${value >= 0 ? '+' : ''}${value.toStringAsFixed(1)}dB',
+          style: Theme.of(context).textTheme.bodySmall,
+          textAlign: TextAlign.right,
+        ),
+      ),
+    ]);
+  }
+}
+
+class _CompSliderRow extends StatelessWidget {
+  const _CompSliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.unit,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final String unit;
+  final ValueChanged<double>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(children: [
+      SizedBox(
+        width: 54,
+        child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+      ),
+      Expanded(
+        child: Slider(
+          value: value.clamp(min, max),
+          min: min, max: max, divisions: 100,
+          onChanged: onChanged,
+        ),
+      ),
+      SizedBox(
+        width: 54,
+        child: Text(
+          '${value.toStringAsFixed(unit == 'ms' ? 0 : 1)}$unit',
+          style: Theme.of(context).textTheme.bodySmall,
+          textAlign: TextAlign.right,
+        ),
+      ),
+    ]);
+  }
+}
+
+class _SpectrumPainter extends CustomPainter {
+  const _SpectrumPainter({required this.magnitudes, required this.color});
+
+  final List<double> magnitudes;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (magnitudes.isEmpty) return;
+    final paint = Paint()..color = color.withOpacity(0.85);
+    final barW = size.width / magnitudes.length;
+    for (int i = 0; i < magnitudes.length; i++) {
+      final h = magnitudes[i] * size.height;
+      canvas.drawRect(
+        Rect.fromLTWH(i * barW, size.height - h, barW * 0.85, h),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SpectrumPainter old) => old.magnitudes != magnitudes;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -194,6 +194,17 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             ])
         }
 
+        eng.onSpectrum = { [weak self] magnitudes, sampleRate in
+            // Already dispatched to main by LoopAudioEngine.
+            self?.eventSink?([
+                "playerId":   playerId,
+                "type":       "spectrum",
+                "binCount":   magnitudes.count,
+                "sampleRate": sampleRate,
+                "magnitudes": magnitudes.map { Double($0) }
+            ])
+        }
+
         eng.onInterruption = { [weak self] interruptionType in
             DispatchQueue.main.async {
                 self?.eventSink?([
@@ -443,6 +454,54 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             eng.dispose()
             engines.removeValue(forKey: pid)
             DispatchQueue.main.async { result(nil) }
+
+        // MARK: Tier 3 — EQ
+        case "setEq":
+            let bass   = Float(args?["bass"]   as? Double ?? 0)
+            let mid    = Float(args?["mid"]    as? Double ?? 0)
+            let treble = Float(args?["treble"] as? Double ?? 0)
+            eng.setEq(bassDb: bass, midDb: mid, trebleDb: treble)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: Tier 3 — Reverb
+        case "setReverb":
+            let preset  = args?["preset"]  as? String ?? "none"
+            let wetMix  = Float(args?["wetMix"] as? Double ?? 0)
+            eng.setReverb(preset: preset, wetMix: wetMix)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: Tier 3 — Compressor
+        case "setCompressor":
+            let enabled      = args?["enabled"]      as? Bool   ?? false
+            let threshold    = Float(args?["thresholdDb"]  as? Double ?? -20)
+            let makeupGain   = Float(args?["makeupGainDb"] as? Double ??   0)
+            let attackMs     = Float(args?["attackMs"]     as? Double ??  10)
+            let releaseMs    = Float(args?["releaseMs"]    as? Double ?? 100)
+            eng.setCompressor(enabled: enabled,
+                              thresholdDb: threshold,
+                              makeupGainDb: makeupGain,
+                              attackMs: attackMs,
+                              releaseMs: releaseMs)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: Tier 3 — Export to WAV
+        case "exportToFile":
+            guard let outPath = args?["outputPath"] as? String else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'outputPath' is required", details: nil)) }
+                return
+            }
+            let outURL = URL(fileURLWithPath: outPath)
+            eng.exportToFile(url: outURL) { error in
+                DispatchQueue.main.async {
+                    if let error {
+                        result(FlutterError(code: "EXPORT_FAILED",
+                                            message: error.localizedDescription,
+                                            details: nil))
+                    } else {
+                        result(nil)
+                    }
+                }
+            }
 
         // MARK: Load from remote URL
         case "loadUrl":

@@ -383,6 +383,47 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            // ── Tier 3: EQ ────────────────────────────────────────────────────
+            "setEq" -> {
+                val bass   = call.argument<Double>("bass")?.toFloat()   ?: 0f
+                val mid    = call.argument<Double>("mid")?.toFloat()    ?: 0f
+                val treble = call.argument<Double>("treble")?.toFloat() ?: 0f
+                eng.setEq(bass, mid, treble)
+                result.success(null)
+            }
+
+            // ── Tier 3: Reverb ────────────────────────────────────────────────
+            "setReverb" -> {
+                val preset = call.argument<String>("preset") ?: "none"
+                val wetMix = call.argument<Double>("wetMix")?.toFloat() ?: 0f
+                eng.setReverb(preset, wetMix)
+                result.success(null)
+            }
+
+            // ── Tier 3: Compressor ────────────────────────────────────────────
+            "setCompressor" -> {
+                val enabled      = call.argument<Boolean>("enabled")         ?: false
+                val threshold    = call.argument<Double>("thresholdDb")?.toFloat()  ?: -20f
+                val makeupGain   = call.argument<Double>("makeupGainDb")?.toFloat() ?: 0f
+                val attackMs     = call.argument<Double>("attackMs")?.toFloat()     ?: 10f
+                val releaseMs    = call.argument<Double>("releaseMs")?.toFloat()    ?: 100f
+                eng.setCompressor(enabled, threshold, makeupGain, attackMs, releaseMs)
+                result.success(null)
+            }
+
+            // ── Tier 3: Export to WAV ─────────────────────────────────────────
+            "exportToFile" -> {
+                val outputPath = call.argument<String>("outputPath")
+                    ?: return result.error("INVALID_ARGS", "'outputPath' is required", null)
+                eng.exportToFile(outputPath) { error ->
+                    if (error != null) {
+                        result.error("EXPORT_FAILED", error.message, null)
+                    } else {
+                        result.success(null)
+                    }
+                }
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -453,6 +494,16 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 "playerId" to playerId,
                 "type"     to "seekComplete",
                 "position" to position
+            ))
+        }
+
+        eng.onSpectrum = { magnitudes, sampleRate ->
+            sendEvent(mapOf(
+                "playerId"   to playerId,
+                "type"       to "spectrum",
+                "binCount"   to magnitudes.size,
+                "sampleRate" to sampleRate,
+                "magnitudes" to magnitudes.map { it.toDouble() }
             ))
         }
 

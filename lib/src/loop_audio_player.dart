@@ -592,6 +592,139 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('clearNowPlayingInfo', {'playerId': _playerId});
   }
 
+  // ── EQ / Reverb / Compressor ─────────────────────────────────────────────
+
+  /// Applies a 3-band equaliser.
+  ///
+  /// [bass] controls an 80 Hz low-shelf, [mid] a 1 kHz parametric peak, and
+  /// [treble] a 10 kHz high-shelf. All gains are in dB and clamped to ±12 dB.
+  ///
+  /// Call `setEq(EqSettings.flat)` or [resetEq] to return to neutral.
+  Future<void> setEq(EqSettings settings) async {
+    _checkNotDisposed();
+    _currentEq = settings;
+    await _channel.invokeMethod<void>('setEq', {
+      'playerId': _playerId,
+      ...settings.toMap(),
+    });
+  }
+
+  /// Resets all EQ bands to 0 dB (flat response).
+  Future<void> resetEq() => setEq(EqSettings.flat);
+
+  /// Sets a factory reverb [preset] with a wet/dry [wetMix] in `[0.0, 1.0]`.
+  ///
+  /// [wetMix] = `0.0` effectively bypasses the reverb. [ReverbPreset.none]
+  /// always bypasses regardless of mix.
+  Future<void> setReverb(ReverbPreset preset, {double wetMix = 0.0}) async {
+    _checkNotDisposed();
+    _currentReverbPreset = preset;
+    _currentReverbWetMix = wetMix.clamp(0.0, 1.0);
+    await _channel.invokeMethod<void>('setReverb', {
+      'playerId': _playerId,
+      'preset':   preset.name,
+      'wetMix':   _currentReverbWetMix,
+    });
+  }
+
+  /// Configures the dynamics compressor / limiter.
+  ///
+  /// Set `enabled: false` in [CompressorSettings] to bypass compression.
+  Future<void> setCompressor(CompressorSettings settings) async {
+    _checkNotDisposed();
+    _currentCompressor = settings;
+    await _channel.invokeMethod<void>('setCompressor', {
+      'playerId': _playerId,
+      ...settings.toMap(),
+    });
+  }
+
+  // ── Spectrum Stream ────────────────────────────────────────────────────────
+
+  /// Stream of [SpectrumData] emitted ~10 times per second while playing.
+  ///
+  /// Each event contains 256 normalised-magnitude bins from a 1024-point FFT.
+  /// Use [SpectrumData.frequencyForBin] to map bins to Hz values.
+  ///
+  /// The stream is silent when the player is paused or stopped.
+  Stream<SpectrumData> get spectrumStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'spectrum')
+        .map((e) => SpectrumData.fromMap(e));
+  }
+
+  // ── Export ─────────────────────────────────────────────────────────────────
+
+  /// Exports the current loop region (or full file if no region is set) to
+  /// [outputPath] as a WAV file.
+  ///
+  /// The export is the raw decoded audio **without** effects processing.
+  /// The [format] parameter is reserved for future formats; currently only
+  /// [ExportFormat.wav] is supported.
+  ///
+  /// Throws [PlatformException] if no file is loaded or write fails.
+  Future<void> exportToFile(
+    String outputPath, {
+    ExportFormat format = ExportFormat.wav,
+  }) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('exportToFile', {
+      'playerId':   _playerId,
+      'outputPath': outputPath,
+      'format':     format.name,
+    });
+  }
+
+  // ── A-B Loop Points ────────────────────────────────────────────────────────
+
+  double? _loopPointA;
+  double? _loopPointB;
+
+  /// Captures the current playback position as loop point A.
+  Future<void> saveLoopPointA() async {
+    _loopPointA = await currentPosition;
+  }
+
+  /// Captures the current playback position as loop point B.
+  Future<void> saveLoopPointB() async {
+    _loopPointB = await currentPosition;
+  }
+
+  /// Calls [setLoopRegion] with the saved A and B points.
+  ///
+  /// Does nothing if either point has not been saved, or if A >= B.
+  Future<void> recallABLoop() async {
+    final a = _loopPointA;
+    final b = _loopPointB;
+    if (a == null || b == null || a >= b) return;
+    await setLoopRegion(a, b);
+  }
+
+  // ── Effects Preset ─────────────────────────────────────────────────────────
+
+  EqSettings         _currentEq           = EqSettings.flat;
+  ReverbPreset       _currentReverbPreset  = ReverbPreset.none;
+  double             _currentReverbWetMix  = 0.0;
+  CompressorSettings _currentCompressor    = const CompressorSettings(enabled: false);
+
+  /// Captures the current EQ, reverb, and compressor state as a reusable [EffectsPreset].
+  EffectsPreset captureEffectsPreset() => EffectsPreset(
+        eq:            _currentEq,
+        reverbPreset:  _currentReverbPreset,
+        reverbWetMix:  _currentReverbWetMix,
+        compressor:    _currentCompressor,
+      );
+
+  /// Applies all settings from [preset] in parallel.
+  Future<void> applyEffectsPreset(EffectsPreset preset) async {
+    await Future.wait([
+      setEq(preset.eq),
+      setReverb(preset.reverbPreset, wetMix: preset.reverbWetMix),
+      setCompressor(preset.compressor),
+    ]);
+  }
+
   // ── Count-in ──────────────────────────────────────────────────────────────
 
   /// Starts [metronome] for [bars] bars, then calls [play] on this player at

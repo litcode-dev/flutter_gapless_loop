@@ -1,6 +1,6 @@
 name: flutter_gapless_loop
 description: "True sample-accurate gapless audio looping on iOS (AVAudioEngine) and Android (AudioTrack). Zero-gap, zero-click loop playback for music production apps."
-version: 0.0.7
+version: 0.0.8
 homepage: https://github.com/litcode-dev/flutter_gapless_loop
 repository: https://github.com/litecode-dev/flutter_gapless_loop
 issue_tracker: https://github.com/litecode-dev/flutter_gapless_loop/issues

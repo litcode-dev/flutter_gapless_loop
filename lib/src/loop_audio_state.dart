@@ -233,6 +233,143 @@ class LoudnessInfo {
       LoudnessInfo(lufs: (map['lufs'] as num? ?? -100).toDouble());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier 3 types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 3-band equaliser settings used by [LoopAudioPlayer.setEq].
+///
+/// All gains are in dB and clamped to `[-12.0, +12.0]` when applied.
+/// - [bass] controls a low-shelf filter centred at 80 Hz.
+/// - [mid] controls a parametric peak filter centred at 1 kHz.
+/// - [treble] controls a high-shelf filter centred at 10 kHz.
+class EqSettings {
+  final double bass;
+  final double mid;
+  final double treble;
+
+  const EqSettings({this.bass = 0.0, this.mid = 0.0, this.treble = 0.0});
+
+  /// Neutral (flat) EQ with all bands at 0 dB.
+  static const flat = EqSettings();
+
+  Map<String, double> toMap() => {'bass': bass, 'mid': mid, 'treble': treble};
+}
+
+/// Factory reverb presets used by [LoopAudioPlayer.setReverb].
+///
+/// On iOS these map to [AVAudioUnitReverbPreset] values.
+/// On Android these map to [android.media.audiofx.PresetReverb] preset IDs.
+enum ReverbPreset {
+  none,
+  smallRoom,
+  mediumRoom,
+  largeRoom,
+  mediumHall,
+  largeHall,
+  plate,
+  cathedral,
+}
+
+/// Compressor/limiter settings used by [LoopAudioPlayer.setCompressor].
+class CompressorSettings {
+  /// Whether the compressor is active. Default: `true`.
+  final bool enabled;
+
+  /// Gain-reduction threshold in dBFS. Range: -40 to 0. Default: `-20.0`.
+  final double thresholdDb;
+
+  /// Makeup gain in dB applied after compression. Range: -20 to +20. Default: `0.0`.
+  final double makeupGainDb;
+
+  /// Attack time in milliseconds. Range: 1–200 ms. Default: `10.0`.
+  final double attackMs;
+
+  /// Release time in milliseconds. Range: 10–3000 ms. Default: `100.0`.
+  final double releaseMs;
+
+  const CompressorSettings({
+    this.enabled     = true,
+    this.thresholdDb = -20.0,
+    this.makeupGainDb = 0.0,
+    this.attackMs    = 10.0,
+    this.releaseMs   = 100.0,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'enabled':      enabled,
+    'thresholdDb':  thresholdDb,
+    'makeupGainDb': makeupGainDb,
+    'attackMs':     attackMs,
+    'releaseMs':    releaseMs,
+  };
+}
+
+/// Real-time FFT spectrum data emitted by [LoopAudioPlayer.spectrumStream].
+///
+/// Emitted approximately 10 times per second while the player is in
+/// [PlayerState.playing]. [magnitudes] contains [binCount] values in
+/// `[0.0, 1.0]` (normalised linear magnitude).
+///
+/// Use [frequencyForBin] to map a bin index to a Hz value.
+class SpectrumData {
+  /// Number of frequency bins. Typically 256.
+  final int binCount;
+
+  /// Normalised magnitude for each bin, in `[0.0, 1.0]`.
+  final List<double> magnitudes;
+
+  /// Sample rate of the source audio, needed for frequency calculations.
+  final double sampleRate;
+
+  const SpectrumData({
+    required this.binCount,
+    required this.magnitudes,
+    required this.sampleRate,
+  });
+
+  /// Centre frequency in Hz for bin [bin].
+  ///
+  /// Based on an FFT of size `binCount * 4` (i.e. 1024 for 256 bins):
+  ///   `frequency = bin × sampleRate / (binCount × 2)`
+  double frequencyForBin(int bin) => bin * sampleRate / (binCount * 2.0);
+
+  factory SpectrumData.fromMap(Map<Object?, Object?> map) {
+    final raw = (map['magnitudes'] as List<Object?>?) ?? const [];
+    return SpectrumData(
+      binCount:   (map['binCount']  as int?    ?? raw.length),
+      sampleRate: (map['sampleRate'] as num?   ?? 44100).toDouble(),
+      magnitudes: raw.map((e) => (e as num).toDouble().clamp(0.0, 1.0)).toList(),
+    );
+  }
+}
+
+/// Export format for [LoopAudioPlayer.exportToFile].
+enum ExportFormat {
+  /// Uncompressed PCM WAV file. Lossless, universally compatible.
+  wav,
+}
+
+/// A snapshot of all active audio effects settings, created by
+/// [LoopAudioPlayer.captureEffectsPreset] and applied via
+/// [LoopAudioPlayer.applyEffectsPreset].
+class EffectsPreset {
+  final EqSettings      eq;
+  final ReverbPreset    reverbPreset;
+  final double          reverbWetMix;     // 0.0–1.0
+  final CompressorSettings compressor;
+
+  const EffectsPreset({
+    this.eq           = EqSettings.flat,
+    this.reverbPreset = ReverbPreset.none,
+    this.reverbWetMix = 0.0,
+    this.compressor   = const CompressorSettings(enabled: false),
+  });
+
+  /// Completely flat / bypass preset — no EQ, no reverb, no compression.
+  static const bypass = EffectsPreset();
+}
+
 /// The result of BPM/tempo detection on a loaded audio file.
 ///
 /// Emitted via [LoopAudioPlayer.bpmStream] after every successful load.

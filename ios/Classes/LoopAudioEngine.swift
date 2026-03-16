@@ -1,5 +1,7 @@
 #if os(iOS)
 import AVFoundation
+import AudioToolbox
+import Accelerate
 import os.log
 
 // MARK: - Public Types
@@ -98,6 +100,10 @@ public class LoopAudioEngine {
     /// Argument is the actual seek position in seconds. Dispatched to `DispatchQueue.main`.
     public var onSeekComplete: ((TimeInterval) -> Void)?
 
+    /// Called with 256 normalised-magnitude FFT bins ~10 Hz while playing.
+    /// Arguments are (magnitudes, sampleRate). Always dispatched to `DispatchQueue.main`.
+    public var onSpectrum: (([Float], Double) -> Void)?
+
     // MARK: - Private: Engine Infrastructure
 
     private let engine = AVAudioEngine()
@@ -105,6 +111,46 @@ public class LoopAudioEngine {
     private let nodeB = AVAudioPlayerNode()   // only connected when crossfadeDuration > 0
     private let mixerNode = AVAudioMixerNode()
     private let timePitchNode = AVAudioUnitTimePitch()
+
+    // Tier 3 effect nodes — always in the graph, bypassed by default
+    private let eqNode: AVAudioUnitEQ = {
+        let eq = AVAudioUnitEQ(numberOfBands: 3)
+        // Band 0: 80 Hz low shelf
+        eq.bands[0].filterType  = .lowShelf
+        eq.bands[0].frequency   = 80
+        eq.bands[0].gain        = 0
+        eq.bands[0].bypass      = false
+        // Band 1: 1 kHz parametric peak
+        eq.bands[1].filterType  = .parametric
+        eq.bands[1].frequency   = 1000
+        eq.bands[1].bandwidth   = 1.0
+        eq.bands[1].gain        = 0
+        eq.bands[1].bypass      = false
+        // Band 2: 10 kHz high shelf
+        eq.bands[2].filterType  = .highShelf
+        eq.bands[2].frequency   = 10000
+        eq.bands[2].gain        = 0
+        eq.bands[2].bypass      = false
+        return eq
+    }()
+
+    private let reverbNode: AVAudioUnitReverb = {
+        let r = AVAudioUnitReverb()
+        r.wetDryMix = 0    // fully dry by default
+        return r
+    }()
+
+    private let compressorNode: AVAudioUnitEffect = {
+        var desc = AudioComponentDescription()
+        desc.componentType         = kAudioUnitType_Effect
+        desc.componentSubType      = kAudioUnitSubType_DynamicsProcessor
+        desc.componentManufacturer = kAudioUnitManufacturer_Apple
+        desc.componentFlags        = 0
+        desc.componentFlagsMask    = 0
+        let fx = AVAudioUnitEffect(audioComponentDescription: desc)
+        fx.bypass = true   // bypassed until explicitly enabled
+        return fx
+    }()
 
     /// All AVAudioEngine operations MUST run on this queue.
     /// This serial queue acts as the synchronization mechanism — no locks needed.
@@ -161,6 +207,18 @@ public class LoopAudioEngine {
 
     /// Timestamp of the last amplitude event dispatch. Used to throttle to ~20 Hz.
     private var _lastAmplitudeTime: TimeInterval = 0
+
+    /// Timestamp of the last spectrum event dispatch. Throttled to ~10 Hz.
+    private var _lastSpectrumTime: TimeInterval = 0
+
+    /// Pre-allocated vDSP FFT setup for 1024-point real FFT. Lazy.
+    private var _fftSetup: vDSP_DFT_SetupD?
+
+    // Pre-allocated buffers for FFT computation (1024-point).
+    private var _fftWindowedReal  = [Double](repeating: 0, count: 1024)
+    private var _fftWindowedImag  = [Double](repeating: 0, count: 1024)
+    private var _fftMagnitudes    = [Double](repeating: 0, count: 512)
+    private var _hannWindow       = [Double](repeating: 0, count: 1024)
 
     // MARK: - Public: Computed Properties
 
@@ -659,6 +717,118 @@ public class LoopAudioEngine {
         }
     }
 
+    // MARK: - Public: EQ / Reverb / Compressor
+
+    /// Sets the 3-band EQ gains in dB. Each value is clamped to ±12 dB.
+    ///
+    /// - Parameters:
+    ///   - bassDb:   Low-shelf gain at 80 Hz.
+    ///   - midDb:    Parametric peak gain at 1 kHz.
+    ///   - trebleDb: High-shelf gain at 10 kHz.
+    public func setEq(bassDb: Float, midDb: Float, trebleDb: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.eqNode.bands[0].gain = max(-12, min(12, bassDb))
+            self.eqNode.bands[1].gain = max(-12, min(12, midDb))
+            self.eqNode.bands[2].gain = max(-12, min(12, trebleDb))
+        }
+    }
+
+    /// Applies a factory reverb preset with a wet/dry mix in [0, 100] percent.
+    ///
+    /// Preset `none` or wetMix == 0 effectively bypasses the reverb node.
+    public func setReverb(preset: String, wetMix: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let mix = max(0, min(100, wetMix * 100))
+
+            if preset == "none" || mix == 0 {
+                self.reverbNode.wetDryMix = 0
+                return
+            }
+
+            let avPreset: AVAudioUnitReverbPreset = {
+                switch preset {
+                case "smallRoom":  return .smallRoom
+                case "mediumRoom": return .mediumRoom
+                case "largeRoom":  return .largeRoom
+                case "mediumHall": return .mediumHall
+                case "largeHall":  return .largeHall
+                case "plate":      return .plate
+                case "cathedral":  return .cathedral
+                default:           return .mediumRoom
+                }
+            }()
+            self.reverbNode.loadFactoryPreset(avPreset)
+            self.reverbNode.wetDryMix = mix
+        }
+    }
+
+    /// Configures the DynamicsProcessor compressor.
+    ///
+    /// - Parameters:
+    ///   - enabled:      Pass `false` to bypass the compressor node.
+    ///   - thresholdDb:  Compression threshold (−40 to 0 dB). Default −20.
+    ///   - makeupGainDb: Makeup gain (−20 to +20 dB). Default 0.
+    ///   - attackMs:     Attack time (1–200 ms). Default 10.
+    ///   - releaseMs:    Release time (10–3000 ms). Default 100.
+    public func setCompressor(
+        enabled:      Bool,
+        thresholdDb:  Float,
+        makeupGainDb: Float,
+        attackMs:     Float,
+        releaseMs:    Float
+    ) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.compressorNode.bypass = !enabled
+            guard enabled else { return }
+            let au = self.compressorNode.audioUnit
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_Threshold,
+                                  kAudioUnitScope_Global, 0, thresholdDb, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_OverallGain,
+                                  kAudioUnitScope_Global, 0, makeupGainDb, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_AttackTime,
+                                  kAudioUnitScope_Global, 0, attackMs / 1000.0, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_ReleaseTime,
+                                  kAudioUnitScope_Global, 0, releaseMs / 1000.0, 0)
+        }
+    }
+
+    // MARK: - Public: Export
+
+    /// Writes the current loop region (or full file if no region is set) as a
+    /// 32-bit float WAV to [url].
+    ///
+    /// The export is the raw decoded PCM — effects are not rendered.
+    /// Completion is called on `DispatchQueue.main`.
+    public func exportToFile(url: URL, completion: @escaping (Error?) -> Void) {
+        audioQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(LoopEngineError.bufferReadFailed) }
+                return
+            }
+            let buf = self.loopBuffer ?? self.originalBuffer
+            guard let buffer = buf else {
+                DispatchQueue.main.async { completion(LoopEngineError.bufferReadFailed) }
+                return
+            }
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let file = try AVAudioFile(
+                        forWriting: url,
+                        settings:   buffer.format.settings,
+                        commonFormat: .pcmFormatFloat32,
+                        interleaved: false)
+                    try file.write(from: buffer)
+                    DispatchQueue.main.async { completion(nil) }
+                } catch {
+                    DispatchQueue.main.async { completion(error) }
+                }
+            }
+        }
+    }
+
     /// Seeks to a position within the loaded file.
     ///
     /// In Modes A and B, seeking stops nodeA, plays the remaining frames of the
@@ -727,16 +897,27 @@ public class LoopAudioEngine {
 
     // MARK: - Private: Engine Graph
 
-    /// Builds the audio graph: nodeA → mixerNode → mainMixerNode → outputNode.
-    /// nodeB is only attached when crossfade is enabled (lazy).
+    /// Builds the audio graph.
+    ///
+    /// Signal path:
+    ///   nodeA → mixerNode → timePitchNode → eqNode → reverbNode → compressorNode → mainMixerNode → output
+    ///
+    /// nodeB is attached lazily when crossfade is first enabled.
     private func setupEngineGraph(format: AVAudioFormat) {
         engine.attach(nodeA)
         engine.attach(mixerNode)
         engine.connect(nodeA, to: mixerNode, format: format)
         engine.attach(timePitchNode)
         engine.connect(mixerNode, to: timePitchNode, format: format)
-        engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
-        logger.debug("Engine graph configured: nodeA → mixerNode → timePitch → mainMixer → output")
+        // Tier 3 effect chain
+        engine.attach(eqNode)
+        engine.connect(timePitchNode, to: eqNode, format: nil)
+        engine.attach(reverbNode)
+        engine.connect(eqNode, to: reverbNode, format: nil)
+        engine.attach(compressorNode)
+        engine.connect(reverbNode, to: compressorNode, format: nil)
+        engine.connect(compressorNode, to: engine.mainMixerNode, format: nil)
+        logger.debug("Engine graph: nodeA→mixer→timePitch→EQ→reverb→compressor→mainMixer→output")
     }
 
     // MARK: - Private: Scheduling
@@ -1080,43 +1261,96 @@ public class LoopAudioEngine {
     /// Must be called from `audioQueue` or before `engine.start()`.
     private func installAmplitudeTap() {
         guard !_tapInstalled else { return }
-        guard onAmplitude != nil else { return }
-        _tapInstalled = true
+        guard onAmplitude != nil || onSpectrum != nil else { return }
+        _tapInstalled      = true
         _lastAmplitudeTime = 0
+        _lastSpectrumTime  = 0
+
+        // Build Hann window once (lazily).
+        if _hannWindow[0] == 0 && _hannWindow[511] == 0 {
+            vDSP_hann_windowD(&_hannWindow, 1024, Int32(vDSP_HANN_NORM))
+        }
+        // Create FFT setup once (lazily).
+        if _fftSetup == nil {
+            _fftSetup = vDSP_DFT_zop_CreateSetupD(nil, 1024, vDSP_DFT_FORWARD)
+        }
 
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            guard let self, let onAmplitude = self.onAmplitude else { return }
+            guard let self else { return }
 
-            // Throttle to ~20 Hz
             let now = Date.timeIntervalSinceReferenceDate
-            guard now - self._lastAmplitudeTime >= 0.05 else { return }
-            self._lastAmplitudeTime = now
-
-            // Compute RMS and peak across all channels and frames.
             guard let channelData = buffer.floatChannelData else { return }
-            let frameCount = Int(buffer.frameLength)
+            let frameCount   = Int(buffer.frameLength)
             let channelCount = Int(buffer.format.channelCount)
             guard frameCount > 0 else { return }
 
-            var sumSquares: Float = 0
-            var peak: Float = 0
-            let totalSamples = frameCount * channelCount
-            for ch in 0..<channelCount {
-                let data = channelData[ch]
-                for i in 0..<frameCount {
-                    let s = data[i]
-                    sumSquares += s * s
-                    let abs = s < 0 ? -s : s
-                    if abs > peak { peak = abs }
+            // ── Amplitude (~20 Hz) ────────────────────────────────────────────
+            if let onAmplitude = self.onAmplitude,
+               now - self._lastAmplitudeTime >= 0.05 {
+                self._lastAmplitudeTime = now
+                var sumSquares: Float = 0
+                var peak: Float = 0
+                let totalSamples = frameCount * channelCount
+                for ch in 0..<channelCount {
+                    let data = channelData[ch]
+                    for i in 0..<frameCount {
+                        let s = data[i]
+                        sumSquares += s * s
+                        let abs = s < 0 ? -s : s
+                        if abs > peak { peak = abs }
+                    }
                 }
+                let rms = (sumSquares / Float(totalSamples)).squareRoot()
+                DispatchQueue.main.async { onAmplitude(min(rms, 1.0), min(peak, 1.0)) }
             }
-            let rms = (sumSquares / Float(totalSamples)).squareRoot()
 
-            DispatchQueue.main.async {
-                onAmplitude(min(rms, 1.0), min(peak, 1.0))
+            // ── Spectrum FFT (~10 Hz) ─────────────────────────────────────────
+            let sampleRate = buffer.format.sampleRate
+            if let onSpectrum = self.onSpectrum,
+               let setup = self._fftSetup,
+               now - self._lastSpectrumTime >= 0.1 {
+                self._lastSpectrumTime = now
+
+                // Mix to mono (double) and apply Hann window.
+                let nSamples = min(frameCount, 1024)
+                for i in 0..<nSamples {
+                    var s: Double = 0
+                    for ch in 0..<channelCount { s += Double(channelData[ch][i]) }
+                    self._fftWindowedReal[i] = s / Double(channelCount) * self._hannWindow[i]
+                    self._fftWindowedImag[i] = 0
+                }
+                // Zero-pad if needed.
+                if nSamples < 1024 {
+                    for i in nSamples..<1024 { self._fftWindowedReal[i] = 0; self._fftWindowedImag[i] = 0 }
+                }
+
+                // In-place complex DFT.
+                var outReal = [Double](repeating: 0, count: 1024)
+                var outImag = [Double](repeating: 0, count: 1024)
+                self._fftWindowedReal.withUnsafeBufferPointer { rPtr in
+                    self._fftWindowedImag.withUnsafeBufferPointer { iPtr in
+                        outReal.withUnsafeMutableBufferPointer { orPtr in
+                            outImag.withUnsafeMutableBufferPointer { oiPtr in
+                                vDSP_DFT_ExecuteD(setup,
+                                    rPtr.baseAddress!, iPtr.baseAddress!,
+                                    orPtr.baseAddress!, oiPtr.baseAddress!)
+                            }
+                        }
+                    }
+                }
+
+                // Compute magnitude of first 512 bins, then average into 256 output bins.
+                for k in 0..<512 {
+                    self._fftMagnitudes[k] = (outReal[k]*outReal[k] + outImag[k]*outImag[k]).squareRoot() / 512.0
+                }
+
+                let spectrum: [Float] = (0..<256).map { i in
+                    Float(min((self._fftMagnitudes[i*2] + self._fftMagnitudes[i*2+1]) * 0.5, 1.0))
+                }
+                DispatchQueue.main.async { onSpectrum(spectrum, sampleRate) }
             }
         }
-        logger.debug("Amplitude tap installed")
+        logger.debug("Amplitude/spectrum tap installed")
     }
 
     /// Removes the tap from the main mixer output node.

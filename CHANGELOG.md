@@ -1,4 +1,37 @@
 
+## 0.0.8
+
+### New features (Tier 3 — Production Audio FX)
+
+* **3-band parametric EQ** (`setEq(EqSettings)`, `resetEq()`) — Low-shelf at 80 Hz, parametric peak at 1 kHz, high-shelf at 10 kHz. Each band ±12 dB. On iOS uses `AVAudioUnitEQ`; on Android uses `android.media.audiofx.Equalizer` bound to the AudioTrack session.
+
+* **Reverb presets** (`setReverb(ReverbPreset, {wetMix})`) — Eight presets: `none`, `smallRoom`, `mediumRoom`, `largeRoom`, `mediumHall`, `largeHall`, `plate`, `cathedral`. On iOS uses `AVAudioUnitReverb.loadFactoryPreset`; on Android uses `android.media.audiofx.PresetReverb`.
+
+* **Compressor/limiter** (`setCompressor(CompressorSettings)`) — Configurable threshold (dBFS), makeup gain (dB), attack (ms), and release (ms). On iOS uses `AVAudioUnitEffect` wrapping `kAudioUnitSubType_DynamicsProcessor`; on Android uses a pure-software 1-pole IIR envelope follower applied per write chunk.
+
+* **Real-time FFT spectrum** (`spectrumStream`) — `Stream<SpectrumData>` emitting 256-bin normalised magnitude data at ~10 Hz while playing. On iOS computed with `vDSP_DFT_ExecuteD` (Accelerate framework); on Android uses an iterative Cooley-Tukey FFT in the write thread. Use `SpectrumData.frequencyForBin(bin)` to map a bin index to Hz.
+
+* **Export to WAV** (`exportToFile(outputPath)`) — Writes the current loop region (or full file if no region set) as a 32-bit float PCM WAV file to an absolute path on the device. Runs on a background thread; the returned `Future` completes on the Flutter isolate.
+
+* **A-B loop points** (`saveLoopPointA()`, `saveLoopPointB()`, `recallABLoop()`) — Pure Dart: captures the current playback position as loop point A or B, and calls `setLoopRegion(A, B)` when both are set and A < B.
+
+* **Effects preset** (`captureEffectsPreset()`, `applyEffectsPreset(preset)`) — Pure Dart: snapshot all active effect settings into an `EffectsPreset` and restore them in one call.
+
+### New types
+
+* `EqSettings` — `bass`, `mid`, `treble` (dB), static `flat`, `toMap()`
+* `ReverbPreset` enum — 8 values
+* `CompressorSettings` — `enabled`, `thresholdDb`, `makeupGainDb`, `attackMs`, `releaseMs`
+* `SpectrumData` — `binCount`, `magnitudes`, `sampleRate`, `frequencyForBin(bin)`
+* `ExportFormat` enum — `wav`
+* `EffectsPreset` — `eq`, `reverbPreset`, `reverbWetMix`, `compressor`, static `bypass`
+
+### Native changes
+
+* **iOS:** `LoopAudioEngine` adds `eqNode` (`AVAudioUnitEQ`, 3 bands), `reverbNode` (`AVAudioUnitReverb`), `compressorNode` (`AVAudioUnitEffect`/DynamicsProcessor) always attached in the graph and bypassed by default. `installAmplitudeTap` extended to emit spectrum events via `vDSP_DFT_ExecuteD` (Accelerate) at ~10 Hz. New methods: `setEq`, `setReverb`, `setCompressor`, `exportToFile`. `FlutterGaplessLoopPlugin` wires `onSpectrum` callback and routes the four new method calls.
+
+* **Android:** `LoopAudioEngine` adds `Equalizer` + `PresetReverb` AudioFx effects bound to the AudioTrack session via `reattachEffects()`. Software compressor applied per write chunk in `applyCompressor()`. Cooley-Tukey FFT computed in `computeSpectrum()` at ~10 Hz. New methods: `setEq`, `setReverb`, `setCompressor`, `exportToFile`, `writeWavFile`. `FlutterGaplessLoopPlugin` wires `onSpectrum` and routes the four new method calls. podspec updated with `AudioToolbox` and `Accelerate` frameworks.
+
 ## 0.0.7
 
 ### New features
