@@ -207,6 +207,34 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 "peak":     peak
             ])
         }
+
+        eng.onSeekComplete = { [weak self] position in
+            // Already dispatched to main by LoopAudioEngine.
+            self?.eventSink?([
+                "playerId": playerId,
+                "type":     "seekComplete",
+                "position": position
+            ])
+        }
+
+        eng.onInterruption = { [weak self] interruptionType, shouldResume in
+            // Already dispatched to main by LoopAudioEngine.
+            self?.eventSink?([
+                "playerId":         playerId,
+                "type":             "interruption",
+                "interruptionType": interruptionType,
+                "shouldResume":     shouldResume
+            ])
+        }
+
+        eng.onSpectrum = { [weak self] magnitudes in
+            // Already dispatched to main by LoopAudioEngine.
+            self?.eventSink?([
+                "playerId":   playerId,
+                "type":       "spectrum",
+                "magnitudes": magnitudes
+            ])
+        }
     }
 
     // MARK: - FlutterPlugin Method Channel (loop player)
@@ -459,6 +487,175 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 }
             }
             task.resume()
+
+        // MARK: - Tier 1: setPitch
+        case "setPitch":
+            guard let semitones = args?["semitones"] as? Double else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'semitones' is required", details: nil)) }
+                return
+            }
+            eng.setPitch(Float(semitones))
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 1: fadeTo
+        case "fadeTo":
+            guard let targetVolume = args?["targetVolume"] as? Double,
+                  let durationMs   = args?["durationMs"]   as? Int else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'targetVolume' and 'durationMs' are required", details: nil)) }
+                return
+            }
+            eng.fadeTo(targetVolume: Float(targetVolume), durationMs: durationMs)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 1: NowPlayingInfo
+        case "setNowPlayingInfo":
+            // Stub: NowPlayingInfo requires MediaPlayer / MPNowPlayingInfoCenter wiring
+            // which is outside the scope of LoopAudioEngine. Accept call silently.
+            DispatchQueue.main.async { result(nil) }
+
+        case "clearNowPlayingInfo":
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 1: RemoteCommands
+        case "enableRemoteCommands":
+            DispatchQueue.main.async { result(nil) }
+
+        case "disableRemoteCommands":
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 2: Waveform data
+        case "getWaveformData":
+            let numSamples = args?["numSamples"] as? Int ?? 1024
+            let waveform = eng.getWaveformData(numSamples: numSamples)
+            DispatchQueue.main.async { result(waveform) }
+
+        // MARK: - Tier 2: Silence detection
+        case "detectSilence":
+            let threshold   = (args?["threshold"]   as? Double).map(Float.init) ?? 0.01
+            let minDuration = args?["minDuration"]   as? Double ?? 0.1
+            let regions = eng.detectSilenceRegions(threshold: threshold, minDuration: minDuration)
+            DispatchQueue.main.async { result(regions) }
+
+        case "trimSilence":
+            let threshold   = (args?["threshold"]   as? Double).map(Float.init) ?? 0.01
+            let minDuration = args?["minDuration"]   as? Double ?? 0.05
+            eng.trimSilence(threshold: threshold, minDuration: minDuration)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 2: Loudness
+        case "getLoudness":
+            let lufs = eng.getLoudness()
+            DispatchQueue.main.async { result(lufs) }
+
+        case "normaliseLoudness":
+            let targetLufs = args?["targetLufs"] as? Double ?? -14.0
+            eng.normaliseLoudness(targetLufs: targetLufs)
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 3: EQ
+        case "setEq":
+            let low  = (args?["low"]  as? Double).map(Float.init) ?? 0
+            let mid  = (args?["mid"]  as? Double).map(Float.init) ?? 0
+            let high = (args?["high"] as? Double).map(Float.init) ?? 0
+            eng.setEq(low: low, mid: mid, high: high)
+            DispatchQueue.main.async { result(nil) }
+
+        case "resetEq":
+            eng.resetEq()
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 3: Reverb
+        case "setReverb":
+            guard let presetIndex = args?["preset"] as? Int,
+                  let wetMix      = args?["wetMix"]  as? Double else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'preset' and 'wetMix' are required", details: nil)) }
+                return
+            }
+            eng.setReverb(presetIndex: presetIndex, wetMix: Float(wetMix))
+            DispatchQueue.main.async { result(nil) }
+
+        case "disableReverb":
+            eng.disableReverb()
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 3: Compressor
+        case "setCompressor":
+            let threshold  = (args?["threshold"]  as? Double).map(Float.init) ?? -20
+            let makeupGain = (args?["makeupGain"]  as? Double).map(Float.init) ?? 0
+            let attackMs   = (args?["attackMs"]    as? Double).map(Float.init) ?? 10
+            let releaseMs  = (args?["releaseMs"]   as? Double).map(Float.init) ?? 100
+            eng.setCompressor(threshold: threshold, makeupGain: makeupGain, attackMs: attackMs, releaseMs: releaseMs)
+            DispatchQueue.main.async { result(nil) }
+
+        case "disableCompressor":
+            eng.disableCompressor()
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 3: FFT Spectrum
+        case "enableSpectrum":
+            eng.enableSpectrum()
+            DispatchQueue.main.async { result(nil) }
+
+        case "disableSpectrum":
+            eng.disableSpectrum()
+            DispatchQueue.main.async { result(nil) }
+
+        // MARK: - Tier 3: WAV Export
+        case "exportToFile":
+            guard let outputPath = args?["outputPath"] as? String else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'outputPath' is required", details: nil)) }
+                return
+            }
+            let format      = args?["format"]      as? Int
+            let regionStart = args?["regionStart"] as? Double
+            let regionEnd   = args?["regionEnd"]   as? Double
+            let outputURL   = URL(fileURLWithPath: outputPath)
+            do {
+                try eng.exportToFile(url: outputURL, format: format ?? 0,
+                                     regionStart: regionStart, regionEnd: regionEnd)
+                DispatchQueue.main.async { result(nil) }
+            } catch {
+                logger.error("exportToFile failed: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "EXPORT_FAILED", message: error.localizedDescription, details: nil))
+                }
+            }
+
+        // MARK: - Tier 3: Sync group
+        case "syncPlayAll":
+            guard let playerIds = args?["playerIds"] as? [String] else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'playerIds' is required", details: nil)) }
+                return
+            }
+            let targetEngines = playerIds.compactMap { engines[$0] }
+            guard !targetEngines.isEmpty else {
+                DispatchQueue.main.async { result(nil) }
+                return
+            }
+            // Use AVAudioTime on the host clock for sample-accurate start (+10 ms)
+            var timebaseInfo = mach_timebase_info_data_t()
+            mach_timebase_info(&timebaseInfo)
+            let nanos: UInt64 = 10_000_000 // 10 ms
+            let ticks = nanos * UInt64(timebaseInfo.denom) / UInt64(timebaseInfo.numer)
+            let avTime = AVAudioTime(hostTime: mach_absolute_time() + ticks)
+            for e in targetEngines { e.playAtTime(avTime) }
+            DispatchQueue.main.async { result(nil) }
+
+        case "syncPauseAll":
+            guard let playerIds = args?["playerIds"] as? [String] else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'playerIds' is required", details: nil)) }
+                return
+            }
+            playerIds.compactMap { engines[$0] }.forEach { $0.pause() }
+            DispatchQueue.main.async { result(nil) }
+
+        case "syncStopAll":
+            guard let playerIds = args?["playerIds"] as? [String] else {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGS", message: "'playerIds' is required", details: nil)) }
+                return
+            }
+            playerIds.compactMap { engines[$0] }.forEach { $0.stop() }
+            DispatchQueue.main.async { result(nil) }
 
         default:
             DispatchQueue.main.async { result(FlutterMethodNotImplemented) }
