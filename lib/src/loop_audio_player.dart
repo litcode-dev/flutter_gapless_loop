@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'loop_audio_state.dart';
+import 'metronome_player.dart';
 import 'file_utils/file_utils.dart';
 
 /// A player for sample-accurate gapless audio looping on iOS, Android, macOS,
@@ -52,6 +54,16 @@ class LoopAudioPlayer {
   // Stored so dispose() can remove the exact WeakReference object from the Set.
   late final WeakReference<LoopAudioPlayer> _weakSelf;
 
+  // ── A-B loop points ────────────────────────────────────────────────────────
+  double? _loopPointA;
+  double? _loopPointB;
+
+  // ── Effects state (for captureEffectsPreset) ───────────────────────────────
+  EqSettings _currentEq = const EqSettings();
+  ReverbPreset _currentReverbPreset = ReverbPreset.smallRoom;
+  double _currentReverbWetMix = 0.0;
+  CompressorSettings _currentCompressor = const CompressorSettings();
+
   // ── Hot-restart guard ──────────────────────────────────────────────────────
   // Dart statics are reset on hot restart; the native engine map is not.
   // Sending 'clearAll' on first construction removes any stale engines from the
@@ -83,6 +95,8 @@ class LoopAudioPlayer {
   void _checkNotDisposed() {
     if (_isDisposed) throw StateError('LoopAudioPlayer has been disposed.');
   }
+
+  // ── Core streams ──────────────────────────────────────────────────────────
 
   /// Stream of [PlayerState] changes pushed from the native layer.
   Stream<PlayerState> get stateStream {
@@ -135,6 +149,77 @@ class LoopAudioPlayer {
         .map((e) => AmplitudeEvent.fromMap(e));
   }
 
+  // ── Tier 1: seekCompleteStream ────────────────────────────────────────────
+
+  /// Fires with the final position (in seconds) each time a seek operation
+  /// completes on the native layer.
+  Stream<double> get seekCompleteStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'seekComplete')
+        .map((e) => (e['position'] as num? ?? 0).toDouble());
+  }
+
+  // ── Tier 1: remoteCommandStream ───────────────────────────────────────────
+
+  /// Stream of commands from the lock screen, headphones, CarPlay, or
+  /// Android notification buttons.
+  ///
+  /// Call [enableRemoteCommands] to start receiving events.
+  Stream<RemoteCommandEvent> get remoteCommandStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'remoteCommand')
+        .map((e) {
+          final cmd = _parseRemoteCommand(e['command'] as String? ?? '');
+          final pos = (e['position'] as num?)?.toDouble();
+          return RemoteCommandEvent(cmd, position: pos);
+        });
+  }
+
+  RemoteCommand _parseRemoteCommand(String s) => switch (s) {
+    'play'                   => RemoteCommand.play,
+    'pause'                  => RemoteCommand.pause,
+    'stop'                   => RemoteCommand.stop,
+    'nextTrack'              => RemoteCommand.nextTrack,
+    'previousTrack'          => RemoteCommand.previousTrack,
+    'seekForward'            => RemoteCommand.seekForward,
+    'seekBackward'           => RemoteCommand.seekBackward,
+    'changePlaybackPosition' => RemoteCommand.changePlaybackPosition,
+    'togglePlayPause'        => RemoteCommand.togglePlayPause,
+    _                        => RemoteCommand.togglePlayPause,
+  };
+
+  // ── Tier 1: interruptionStream ────────────────────────────────────────────
+
+  /// Stream of audio interruption events (phone call, Siri, audio focus loss).
+  ///
+  /// On iOS the engine automatically pauses on [InterruptionType.began].
+  /// On Android the engine pauses on audio focus loss.
+  Stream<InterruptionEvent> get interruptionStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'interruption')
+        .map((e) {
+          final t = (e['interruptionType'] as String?) == 'began'
+              ? InterruptionType.began
+              : InterruptionType.ended;
+          return InterruptionEvent(t, shouldResume: e['shouldResume'] as bool? ?? false);
+        });
+  }
+
+  // ── Tier 3: spectrumStream ────────────────────────────────────────────────
+
+  /// Real-time FFT spectrum data. Enable with [enableSpectrum].
+  Stream<SpectrumData> get spectrumStream {
+    _checkNotDisposed();
+    return _events
+        .where((e) => e['type'] == 'spectrum')
+        .map((e) => SpectrumData.fromList(e['magnitudes'] as List<Object?>? ?? []));
+  }
+
+  // ── Load methods ──────────────────────────────────────────────────────────
+
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
   Future<void> load(String assetPath) async {
     _checkNotDisposed();
@@ -166,6 +251,8 @@ class LoopAudioPlayer {
       Uint8List bytes, String extension) async {
     await getFileUtils().loadFromBytes(_playerId, bytes, extension, loadFromFile);
   }
+
+  // ── Playback controls ─────────────────────────────────────────────────────
 
   /// Starts looping playback from the beginning (or current loop region start).
   Future<void> play() async {
@@ -265,6 +352,360 @@ class LoopAudioPlayer {
         'getCurrentPosition', {'playerId': _playerId}) ?? 0.0;
   }
 
+  // ── Tier 1: setPitch ──────────────────────────────────────────────────────
+
+  /// Sets the pitch offset in semitones, independent of playback rate.
+  /// Range: ±24 semitones (clamped).
+  Future<void> setPitch(double semitones) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>(
+        'setPitch', {'playerId': _playerId, 'semitones': semitones.clamp(-24.0, 24.0)});
+  }
+
+  // ── Tier 1: NowPlayingInfo ────────────────────────────────────────────────
+
+  /// Updates the iOS MPNowPlayingInfoCenter and Android media notification.
+  Future<void> setNowPlayingInfo(NowPlayingInfo info) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('setNowPlayingInfo', {
+      'playerId': _playerId,
+      if (info.title    != null) 'title':    info.title,
+      if (info.artist   != null) 'artist':   info.artist,
+      if (info.album    != null) 'album':    info.album,
+      if (info.artworkBytes != null) 'artworkBytes': info.artworkBytes,
+      'artworkMimeType': info.artworkMimeType,
+      if (info.duration != null) 'duration': info.duration,
+      if (info.elapsed  != null) 'elapsed':  info.elapsed,
+    });
+  }
+
+  /// Clears the iOS MPNowPlayingInfoCenter and Android media notification.
+  Future<void> clearNowPlayingInfo() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('clearNowPlayingInfo', {'playerId': _playerId});
+  }
+
+  // ── Tier 1: RemoteCommands ────────────────────────────────────────────────
+
+  /// Registers for lock-screen / headphones / CarPlay / Android notification
+  /// remote commands. Events arrive via [remoteCommandStream].
+  Future<void> enableRemoteCommands() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('enableRemoteCommands', {'playerId': _playerId});
+  }
+
+  /// Unregisters all remote command handlers.
+  Future<void> disableRemoteCommands() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('disableRemoteCommands', {'playerId': _playerId});
+  }
+
+  // ── Tier 2: Beat-synced seek ──────────────────────────────────────────────
+
+  /// Seeks to the nearest beat position at or before [currentPos].
+  Future<void> seekToNearestBeat(BpmResult bpm, double currentPos) async {
+    final beats = bpm.beats;
+    if (beats.isEmpty) { await seek(currentPos); return; }
+    double nearest = beats.first;
+    for (final b in beats) {
+      if (b <= currentPos) nearest = b;
+    }
+    await seek(nearest);
+  }
+
+  /// Seeks to the beat at [beatIndex] (0-based) in [bpm.beats].
+  Future<void> seekToBeat(BpmResult bpm, int beatIndex) async {
+    final beats = bpm.beats;
+    if (beatIndex < 0 || beatIndex >= beats.length) {
+      throw RangeError.range(beatIndex, 0, beats.length - 1, 'beatIndex');
+    }
+    await seek(beats[beatIndex]);
+  }
+
+  /// Seeks to the bar at [barIndex] (0-based) in [bpm.bars].
+  Future<void> seekToBar(BpmResult bpm, int barIndex) async {
+    final bars = bpm.bars;
+    if (barIndex < 0 || barIndex >= bars.length) {
+      throw RangeError.range(barIndex, 0, bars.length - 1, 'barIndex');
+    }
+    await seek(bars[barIndex]);
+  }
+
+  // ── Tier 2: Count-in ──────────────────────────────────────────────────────
+
+  /// Waits [bars] bars of the metronome then starts playback.
+  ///
+  /// The [metro] must already be running. Playback starts after the specified
+  /// number of bars have elapsed as counted by [metro.beatStream].
+  Future<void> playAfterCountIn(
+    MetronomePlayer metro,
+    BpmResult bpm, {
+    int bars = 1,
+  }) async {
+    _checkNotDisposed();
+    if (bars <= 0) throw ArgumentError.value(bars, 'bars', 'must be >= 1');
+    int remaining = bars * (bpm.beatsPerBar > 0 ? bpm.beatsPerBar : 4);
+    final completer = Completer<void>();
+    late StreamSubscription<int> sub;
+    sub = metro.beatStream.listen((beat) {
+      remaining--;
+      if (remaining <= 0) {
+        sub.cancel();
+        if (!completer.isCompleted) completer.complete();
+      }
+    });
+    await completer.future;
+    await play();
+  }
+
+  // ── Tier 2: Fades ─────────────────────────────────────────────────────────
+
+  /// Fades volume to [targetVolume] over [duration] using native 100 Hz ramp.
+  Future<void> fadeTo(double targetVolume, Duration duration) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('fadeTo', {
+      'playerId':    _playerId,
+      'targetVolume': targetVolume.clamp(0.0, 1.0),
+      'durationMs':   duration.inMilliseconds,
+    });
+  }
+
+  /// Fades volume from current level to 1.0.
+  Future<void> fadeIn(Duration duration) => fadeTo(1.0, duration);
+
+  /// Fades volume from current level to 0.0.
+  Future<void> fadeOut(Duration duration) => fadeTo(0.0, duration);
+
+  // ── Tier 2: Waveform data ─────────────────────────────────────────────────
+
+  /// Returns a downsampled peak array for waveform display.
+  ///
+  /// [numSamples] is the number of output data points (default 1024).
+  /// Each value is a normalised peak in [0.0, 1.0].
+  Future<Float32List> getWaveformData({int numSamples = 1024}) async {
+    _checkNotDisposed();
+    final List<Object?>? raw = await _channel.invokeMethod<List<Object?>>(
+        'getWaveformData', {'playerId': _playerId, 'numSamples': numSamples});
+    if (raw == null) return Float32List(0);
+    final result = Float32List(raw.length);
+    for (int i = 0; i < raw.length; i++) {
+      result[i] = (raw[i] as num).toDouble().clamp(0.0, 1.0);
+    }
+    return result;
+  }
+
+  // ── Tier 2: Silence detection ─────────────────────────────────────────────
+
+  /// Detects contiguous silent regions in the loaded file.
+  ///
+  /// [threshold] is the amplitude below which a sample is considered silent
+  /// (default 0.01). [minDuration] is the minimum length in seconds for a
+  /// region to be reported (default 0.1 s).
+  Future<List<SilenceRegion>> detectSilence({
+    double threshold  = 0.01,
+    double minDuration = 0.1,
+  }) async {
+    _checkNotDisposed();
+    final raw = await _channel.invokeMethod<List<Object?>>(
+      'detectSilence',
+      {'playerId': _playerId, 'threshold': threshold, 'minDuration': minDuration},
+    );
+    if (raw == null) return [];
+    return raw
+        .whereType<Map<Object?, Object?>>()
+        .map(SilenceRegion.fromMap)
+        .toList();
+  }
+
+  /// Detects leading/trailing silence and applies those boundaries as the loop
+  /// region, effectively trimming silence from playback.
+  Future<void> trimSilence({
+    double threshold   = 0.01,
+    double minDuration = 0.05,
+  }) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>(
+      'trimSilence',
+      {'playerId': _playerId, 'threshold': threshold, 'minDuration': minDuration},
+    );
+  }
+
+  // ── Tier 2: LUFS loudness ─────────────────────────────────────────────────
+
+  /// Returns the integrated loudness of the loaded file in LUFS (EBU R128).
+  ///
+  /// Returns a negative value, e.g. −14.0 LUFS. Returns −70.0 if unavailable.
+  Future<double> getLoudness() async {
+    _checkNotDisposed();
+    return await _channel.invokeMethod<double>(
+        'getLoudness', {'playerId': _playerId}) ?? -70.0;
+  }
+
+  /// Adjusts volume to reach [targetLufs] based on measured integrated loudness.
+  Future<void> normaliseLoudness({double targetLufs = -14.0}) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>(
+      'normaliseLoudness',
+      {'playerId': _playerId, 'targetLufs': targetLufs},
+    );
+  }
+
+  // ── Tier 3: 3-band EQ ─────────────────────────────────────────────────────
+
+  /// Applies 3-band EQ settings (80 Hz low shelf, 1 kHz peak, 10 kHz high shelf).
+  Future<void> setEq(EqSettings settings) async {
+    _checkNotDisposed();
+    _currentEq = settings;
+    await _channel.invokeMethod<void>('setEq', {
+      'playerId': _playerId,
+      ...settings.toMap(),
+    });
+  }
+
+  /// Resets all EQ bands to 0 dB (bypassed).
+  Future<void> resetEq() async {
+    _checkNotDisposed();
+    _currentEq = const EqSettings();
+    await _channel.invokeMethod<void>('resetEq', {'playerId': _playerId});
+  }
+
+  // ── Tier 3: Reverb ────────────────────────────────────────────────────────
+
+  /// Applies reverb with the given [preset] and wet/dry [wetMix] (0.0–1.0).
+  Future<void> setReverb(ReverbPreset preset, {double wetMix = 0.3}) async {
+    _checkNotDisposed();
+    _currentReverbPreset = preset;
+    _currentReverbWetMix = wetMix;
+    await _channel.invokeMethod<void>('setReverb', {
+      'playerId': _playerId,
+      'preset':   preset.index,
+      'wetMix':   wetMix.clamp(0.0, 1.0),
+    });
+  }
+
+  /// Disables reverb (bypasses the reverb node).
+  Future<void> disableReverb() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('disableReverb', {'playerId': _playerId});
+  }
+
+  // ── Tier 3: Compressor ────────────────────────────────────────────────────
+
+  /// Applies dynamic-range compression with the given [settings].
+  Future<void> setCompressor(CompressorSettings settings) async {
+    _checkNotDisposed();
+    _currentCompressor = settings;
+    await _channel.invokeMethod<void>('setCompressor', {
+      'playerId': _playerId,
+      ...settings.toMap(),
+    });
+  }
+
+  /// Disables the compressor (bypasses the compressor node).
+  Future<void> disableCompressor() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('disableCompressor', {'playerId': _playerId});
+  }
+
+  // ── Tier 3: FFT spectrum ──────────────────────────────────────────────────
+
+  /// Starts emitting real-time FFT data on [spectrumStream].
+  Future<void> enableSpectrum() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('enableSpectrum', {'playerId': _playerId});
+  }
+
+  /// Stops FFT spectrum emission.
+  Future<void> disableSpectrum() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('disableSpectrum', {'playerId': _playerId});
+  }
+
+  // ── Tier 3: WAV export ────────────────────────────────────────────────────
+
+  /// Exports the loaded audio (or a region of it) to a WAV file.
+  ///
+  /// [outputPath] must be a writable absolute file path.
+  /// [format] selects 32-bit float or 16-bit integer PCM.
+  /// [regionStart] / [regionEnd] optionally restrict the exported region.
+  Future<void> exportToFile(
+    String outputPath, {
+    ExportFormat format  = ExportFormat.wav32bit,
+    double? regionStart,
+    double? regionEnd,
+  }) async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('exportToFile', {
+      'playerId':   _playerId,
+      'outputPath': outputPath,
+      'format':     format.index,
+      if (regionStart != null) 'regionStart': regionStart,
+      if (regionEnd   != null) 'regionEnd':   regionEnd,
+    });
+  }
+
+  // ── Tier 3: A-B loop points ───────────────────────────────────────────────
+
+  /// The current A and B loop points (may be null if not yet set).
+  LoopPoints get loopPoints => LoopPoints(pointA: _loopPointA, pointB: _loopPointB);
+
+  /// Saves the current playback position as loop point A.
+  Future<void> saveLoopPointA() async {
+    _checkNotDisposed();
+    _loopPointA = await currentPosition;
+  }
+
+  /// Saves the current playback position as loop point B.
+  Future<void> saveLoopPointB() async {
+    _checkNotDisposed();
+    _loopPointB = await currentPosition;
+  }
+
+  /// Applies the saved A-B loop points as the active loop region.
+  ///
+  /// Throws [StateError] if both points are not yet set.
+  Future<void> recallABLoop() async {
+    _checkNotDisposed();
+    final a = _loopPointA, b = _loopPointB;
+    if (a == null || b == null) {
+      throw StateError('Both loop points A and B must be set first');
+    }
+    await setLoopRegion(a < b ? a : b, a < b ? b : a);
+  }
+
+  /// Clears both A and B loop points.
+  void clearLoopPoints() {
+    _loopPointA = null;
+    _loopPointB = null;
+  }
+
+  // ── Tier 3: Effects preset ────────────────────────────────────────────────
+
+  /// Captures a snapshot of the current DSP effect settings.
+  Future<EffectsPreset> captureEffectsPreset() async {
+    _checkNotDisposed();
+    return EffectsPreset(
+      eq:           _currentEq,
+      reverb:       _currentReverbPreset,
+      reverbWetMix: _currentReverbWetMix,
+      compressor:   _currentCompressor,
+    );
+  }
+
+  /// Applies all settings from [preset] atomically.
+  Future<void> applyEffectsPreset(EffectsPreset preset) async {
+    _checkNotDisposed();
+    _currentEq             = preset.eq;
+    _currentReverbPreset   = preset.reverb;
+    _currentReverbWetMix   = preset.reverbWetMix;
+    _currentCompressor     = preset.compressor;
+    await setEq(preset.eq);
+    await setReverb(preset.reverb, wetMix: preset.reverbWetMix);
+    await setCompressor(preset.compressor);
+  }
+
+  // ── Dispose ───────────────────────────────────────────────────────────────
+
   /// Releases all native resources. This instance cannot be used after dispose.
   Future<void> dispose() async {
     if (_isDisposed) return;
@@ -273,6 +714,8 @@ class LoopAudioPlayer {
     LoopAudioMaster._instances.remove(_weakSelf);
     await _channel.invokeMethod<void>('dispose', {'playerId': _playerId});
   }
+
+  // ── Private helpers ───────────────────────────────────────────────────────
 
   PlayerState _parseState(String s) => switch (s) {
         'loading' => PlayerState.loading,

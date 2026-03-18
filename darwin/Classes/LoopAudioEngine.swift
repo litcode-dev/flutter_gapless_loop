@@ -1,5 +1,6 @@
 #if os(iOS)
 import AVFoundation
+import Accelerate
 import os.log
 
 // MARK: - Public Types
@@ -90,6 +91,16 @@ public class LoopAudioEngine {
     /// while the engine is playing. Always dispatched to `DispatchQueue.main`.
     public var onAmplitude: ((Float, Float) -> Void)?
 
+    /// Called when a seek operation completes; the argument is the final position in seconds.
+    public var onSeekComplete: ((TimeInterval) -> Void)?
+
+    /// Called when an audio interruption begins or ends.
+    /// Arguments: interruptionType ("began"/"ended"), shouldResume flag.
+    public var onInterruption: ((String, Bool) -> Void)?
+
+    /// Called with 256 normalised [0,1] FFT magnitude bins when spectrum is enabled.
+    public var onSpectrum: (([Float]) -> Void)?
+
     // MARK: - Private: Engine Infrastructure
 
     private let engine = AVAudioEngine()
@@ -97,6 +108,15 @@ public class LoopAudioEngine {
     private let nodeB = AVAudioPlayerNode()   // only connected when crossfadeDuration > 0
     private let mixerNode = AVAudioMixerNode()
     private let timePitchNode = AVAudioUnitTimePitch()
+    private let eqNode = AVAudioUnitEQ(numberOfBands: 3)
+    private let reverbNode = AVAudioUnitReverb()
+    private var compressorNode: AVAudioUnitEffect?
+
+    // MARK: - Private: FFT
+
+    private var fftSetup: vDSP_DFT_Setup?
+    private var spectrumEnabled = false
+    private static let fftSize = 512
 
     /// All AVAudioEngine operations MUST run on this queue.
     /// This serial queue acts as the synchronization mechanism — no locks needed.
@@ -515,6 +535,292 @@ public class LoopAudioEngine {
 
             if wasPlaying { self.nodeA.play() }
             self.logger.info("seek: \(time)s")
+            let seekPos = time
+            DispatchQueue.main.async { [weak self] in
+                self?.onSeekComplete?(seekPos)
+            }
+        }
+    }
+
+    // MARK: - Public API: New Tier 1-3 Methods
+
+    /// Sets pitch offset in semitones (±24), independent of playback rate.
+    public func setPitch(_ semitones: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.timePitchNode.pitch = (semitones * 100).clamped(to: -2400...2400)
+        }
+    }
+
+    /// Schedules playback to start at a specific AVAudioTime (for sample-accurate sync).
+    public func playAtTime(_ time: AVAudioTime) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            guard self._state == .ready || self._state == .stopped else { return }
+            self.scheduleForCurrentMode()
+            self.nodeA.play(at: time)
+            self.setState(.playing)
+            self.installAmplitudeTap()
+        }
+    }
+
+    /// Fades volume to [targetVolume] over [durationMs] milliseconds at 100 Hz.
+    public func fadeTo(targetVolume: Float, durationMs: Int) {
+        let steps = max(1, durationMs / 10)
+        let stepInterval = Double(durationMs) / 1000.0 / Double(steps)
+        let startVolume = mixerNode.outputVolume
+        let delta = targetVolume - startVolume
+        var step = 0
+        Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            step += 1
+            let progress = Float(step) / Float(steps)
+            self.audioQueue.async {
+                self.mixerNode.outputVolume = startVolume + delta * progress
+            }
+            if step >= steps { timer.invalidate() }
+        }
+    }
+
+    /// Returns a downsampled peak array for waveform display.
+    public func getWaveformData(numSamples: Int) -> [Float] {
+        guard let buf = originalBuffer else { return [] }
+        guard let channelData = buf.floatChannelData else { return [] }
+        let ch0 = channelData[0]
+        let frameCount = Int(buf.frameLength)
+        let blockSize = max(1, frameCount / numSamples)
+        var result = [Float]()
+        result.reserveCapacity(numSamples)
+        var i = 0
+        while i < frameCount && result.count < numSamples {
+            var peak: Float = 0
+            let end = min(i + blockSize, frameCount)
+            for j in i..<end { peak = max(peak, abs(ch0[j])) }
+            result.append(peak)
+            i = end
+        }
+        return result
+    }
+
+    /// Detects silence regions in the loaded file.
+    public func detectSilenceRegions(threshold: Float, minDuration: Double) -> [[String: Double]] {
+        guard let buf = originalBuffer else { return [] }
+        guard let channelData = buf.floatChannelData else { return [] }
+        let ch0 = channelData[0]
+        let frameCount = Int(buf.frameLength)
+        let sr = buf.format.sampleRate
+        let minFrames = Int(minDuration * sr)
+        var regions = [[String: Double]]()
+        var silenceStart: Int? = nil
+        var i = 0
+        while i < frameCount {
+            let sample = abs(ch0[i])
+            if sample < threshold {
+                if silenceStart == nil { silenceStart = i }
+            } else {
+                if let start = silenceStart {
+                    let len = i - start
+                    if len >= minFrames {
+                        regions.append(["start": Double(start) / sr, "end": Double(i) / sr])
+                    }
+                    silenceStart = nil
+                }
+            }
+            i += 1
+        }
+        if let start = silenceStart {
+            let len = frameCount - start
+            if len >= minFrames {
+                regions.append(["start": Double(start) / sr, "end": Double(frameCount) / sr])
+            }
+        }
+        return regions
+    }
+
+    /// Trims leading/trailing silence by applying a loop region.
+    public func trimSilence(threshold: Float, minDuration: Double) {
+        guard let buf = originalBuffer else { return }
+        guard let channelData = buf.floatChannelData else { return [] as Void }
+        let ch0 = channelData[0]
+        let frameCount = Int(buf.frameLength)
+        let sr = buf.format.sampleRate
+        var firstNonSilent = 0
+        var lastNonSilent = frameCount - 1
+        for i in 0..<frameCount {
+            if abs(ch0[i]) >= threshold { firstNonSilent = i; break }
+        }
+        for i in stride(from: frameCount - 1, through: 0, by: -1) {
+            if abs(ch0[i]) >= threshold { lastNonSilent = i; break }
+        }
+        let startSecs = Double(firstNonSilent) / sr
+        let endSecs   = Double(lastNonSilent + 1) / sr
+        if startSecs < endSecs {
+            try? setLoopRegion(start: startSecs, end: endSecs)
+        }
+    }
+
+    /// Computes integrated LUFS (EBU R128 simplified, K-weighted).
+    public func getLoudness() -> Double {
+        guard let buf = originalBuffer else { return -70.0 }
+        guard let channelData = buf.floatChannelData else { return -70.0 }
+        let frameCount = Int(buf.frameLength)
+        guard frameCount > 0 else { return -70.0 }
+        let ch0 = channelData[0]
+        var sumSquare: Double = 0.0
+        var prev: Float = 0
+        for i in 0..<frameCount {
+            let s = ch0[i]
+            let hpOut = s - prev * 0.9
+            prev = s
+            sumSquare += Double(hpOut * hpOut)
+        }
+        let meanSquare = sumSquare / Double(frameCount)
+        if meanSquare <= 0 { return -70.0 }
+        return -0.691 + 10.0 * log10(meanSquare)
+    }
+
+    /// Adjusts volume to reach targetLufs based on measured loudness.
+    public func normaliseLoudness(targetLufs: Double) {
+        let measured = getLoudness()
+        let gainDb = targetLufs - measured
+        let linearGain = Float(pow(10.0, gainDb / 20.0))
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.mixerNode.outputVolume = (self.mixerNode.outputVolume * linearGain).clamped(to: 0...1)
+        }
+    }
+
+    // MARK: - Public API: EQ
+
+    /// Sets the 3-band EQ gains in dB (low shelf 80Hz, peak 1kHz, high shelf 10kHz).
+    public func setEq(low: Float, mid: Float, high: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.eqNode.bands[0].gain    = low.clamped(to: -12...12)
+            self.eqNode.bands[1].gain    = mid.clamped(to: -12...12)
+            self.eqNode.bands[2].gain    = high.clamped(to: -12...12)
+            self.eqNode.bands[0].bypass  = (low  == 0)
+            self.eqNode.bands[1].bypass  = (mid  == 0)
+            self.eqNode.bands[2].bypass  = (high == 0)
+        }
+    }
+
+    /// Resets all EQ bands to 0 dB (bypassed).
+    public func resetEq() {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.eqNode.bands.forEach { $0.gain = 0; $0.bypass = true }
+        }
+    }
+
+    // MARK: - Public API: Reverb
+
+    private static let reverbPresets: [AVAudioUnitReverbPreset] = [
+        .smallRoom, .mediumRoom, .largeRoom, .mediumHall, .largeHall, .plate, .cathedral
+    ]
+
+    /// Sets the reverb preset and wet/dry mix.
+    public func setReverb(presetIndex: Int, wetMix: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let idx = presetIndex % LoopAudioEngine.reverbPresets.count
+            self.reverbNode.loadFactoryPreset(LoopAudioEngine.reverbPresets[idx])
+            self.reverbNode.wetDryMix = (wetMix * 100).clamped(to: 0...100)
+            self.reverbNode.bypass = false
+        }
+    }
+
+    /// Disables reverb (bypasses the node).
+    public func disableReverb() {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.reverbNode.bypass = true
+        }
+    }
+
+    // MARK: - Public API: Compressor
+
+    /// Sets compressor parameters using kAudioUnitSubType_DynamicsProcessor.
+    public func setCompressor(threshold: Float, makeupGain: Float, attackMs: Float, releaseMs: Float) {
+        guard let node = compressorNode else { return }
+        audioQueue.async {
+            let au = node.audioUnit
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_Threshold,
+                                  kAudioUnitScope_Global, 0, threshold, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_MasterGain,
+                                  kAudioUnitScope_Global, 0, makeupGain, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_AttackTime,
+                                  kAudioUnitScope_Global, 0, attackMs / 1000.0, 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_ReleaseTime,
+                                  kAudioUnitScope_Global, 0, releaseMs / 1000.0, 0)
+            node.bypass = false
+        }
+    }
+
+    /// Disables the compressor (bypasses the node).
+    public func disableCompressor() {
+        guard let node = compressorNode else { return }
+        audioQueue.async { node.bypass = true }
+    }
+
+    // MARK: - Public API: FFT Spectrum
+
+    /// Starts emitting real-time FFT data via onSpectrum.
+    public func enableSpectrum() {
+        fftSetup = vDSP_DFT_zrop_CreateSetup(nil, UInt(LoopAudioEngine.fftSize), .FORWARD)
+        spectrumEnabled = true
+    }
+
+    /// Stops FFT spectrum emission.
+    public func disableSpectrum() {
+        spectrumEnabled = false
+        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
+        fftSetup = nil
+    }
+
+    // MARK: - Public API: WAV Export
+
+    /// Exports a region of the loaded file to a WAV file.
+    public func exportToFile(url: URL, format: Int, regionStart: Double?, regionEnd: Double?) throws {
+        guard let buf = originalBuffer else { throw LoopEngineError.bufferReadFailed }
+        let sr = buf.format.sampleRate
+        let totalSecs = Double(buf.frameLength) / sr
+        let startFrame = AVAudioFramePosition(((regionStart ?? 0) * sr).rounded())
+        let endFrame   = AVAudioFramePosition(((regionEnd ?? totalSecs) * sr).rounded())
+        let frameCount = AVAudioFrameCount(max(0, endFrame - startFrame))
+        guard frameCount > 0 else { throw LoopEngineError.bufferReadFailed }
+
+        let outputSettings: [String: Any]
+        if format == 0 {
+            outputSettings = [
+                AVFormatIDKey:             Int(kAudioFormatLinearPCM),
+                AVSampleRateKey:           sr,
+                AVNumberOfChannelsKey:     buf.format.channelCount,
+                AVLinearPCMBitDepthKey:    32,
+                AVLinearPCMIsFloatKey:     true,
+                AVLinearPCMIsBigEndianKey: false,
+            ]
+        } else {
+            outputSettings = [
+                AVFormatIDKey:             Int(kAudioFormatLinearPCM),
+                AVSampleRateKey:           sr,
+                AVNumberOfChannelsKey:     buf.format.channelCount,
+                AVLinearPCMBitDepthKey:    16,
+                AVLinearPCMIsFloatKey:     false,
+                AVLinearPCMIsBigEndianKey: false,
+            ]
+        }
+        let outFile = try AVAudioFile(forWriting: url, settings: outputSettings)
+        if let subBuf = AVAudioPCMBuffer(pcmFormat: buf.format, frameCapacity: frameCount),
+           let srcData = buf.floatChannelData,
+           let dstData = subBuf.floatChannelData {
+            subBuf.frameLength = frameCount
+            for ch in 0..<Int(buf.format.channelCount) {
+                memcpy(dstData[ch],
+                       srcData[ch].advanced(by: Int(startFrame)),
+                       Int(frameCount) * MemoryLayout<Float>.stride)
+            }
+            try outFile.write(from: subBuf)
         }
     }
 
@@ -522,6 +828,7 @@ public class LoopAudioEngine {
     public func dispose() {
         bpmWorkItem?.cancel()
         bpmWorkItem = nil
+        disableSpectrum()
         audioQueue.async { [weak self] in
             guard let self else { return }
             self.removeAmplitudeTap()
@@ -539,16 +846,48 @@ public class LoopAudioEngine {
 
     // MARK: - Private: Engine Graph
 
-    /// Builds the audio graph: nodeA → mixerNode → mainMixerNode → outputNode.
+    /// Builds the audio graph: nodeA → mixerNode → eqNode → reverbNode → compressorNode → timePitchNode → mainMixerNode → outputNode.
     /// nodeB is only attached when crossfade is enabled (lazy).
     private func setupEngineGraph(format: AVAudioFormat) {
+        // Configure EQ bands: low-shelf 80Hz, peak 1kHz, high-shelf 10kHz
+        eqNode.bands[0].filterType  = .lowShelf
+        eqNode.bands[0].frequency   = 80
+        eqNode.bands[0].bypass      = true
+        eqNode.bands[1].filterType  = .parametric
+        eqNode.bands[1].frequency   = 1000
+        eqNode.bands[1].bandwidth   = 1.0
+        eqNode.bands[1].bypass      = true
+        eqNode.bands[2].filterType  = .highShelf
+        eqNode.bands[2].frequency   = 10000
+        eqNode.bands[2].bypass      = true
+
+        reverbNode.bypass = true
+
+        // Set up compressor node
+        let compDesc = AudioComponentDescription(
+            componentType:         kAudioUnitType_Effect,
+            componentSubType:      kAudioUnitSubType_DynamicsProcessor,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags:        0,
+            componentFlagsMask:    0)
+        let comp = AVAudioUnitEffect(audioComponentDescription: compDesc)
+        compressorNode = comp
+        comp.bypass = true
+
         engine.attach(nodeA)
         engine.attach(mixerNode)
-        engine.connect(nodeA, to: mixerNode, format: format)
+        engine.attach(eqNode)
+        engine.attach(reverbNode)
+        engine.attach(comp)
         engine.attach(timePitchNode)
-        engine.connect(mixerNode, to: timePitchNode, format: format)
+
+        engine.connect(nodeA,        to: mixerNode,    format: format)
+        engine.connect(mixerNode,    to: eqNode,       format: format)
+        engine.connect(eqNode,       to: reverbNode,   format: format)
+        engine.connect(reverbNode,   to: comp,         format: format)
+        engine.connect(comp,         to: timePitchNode, format: format)
         engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
-        logger.debug("Engine graph configured: nodeA → mixerNode → timePitch → mainMixer → output")
+        logger.debug("Engine graph configured: nodeA → mixer → eq → reverb → comp → timePitch → mainMixer → output")
     }
 
     // MARK: - Private: Scheduling
@@ -831,22 +1170,28 @@ public class LoopAudioEngine {
                     self.setState(.paused)
                     self.logger.info("Interruption began: paused")
                 }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onInterruption?("began", false)
+                }
             case .ended:
+                let optValue = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let opts = AVAudioSession.InterruptionOptions(rawValue: optValue)
+                let shouldResume = opts.contains(.shouldResume)
                 // Resume only if the system signals it is safe to do so.
-                if let optValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
-                    let opts = AVAudioSession.InterruptionOptions(rawValue: optValue)
-                    if opts.contains(.shouldResume) && self._state == .paused {
-                        do {
-                            try self.engine.start()
-                            self.nodeA.play()
-                            if self.nodeBIsConnected { self.nodeB.play() }
-                            self.setState(.playing)
-                            self.logger.info("Interruption ended: resumed")
-                        } catch {
-                            self.logger.error("Failed to restart engine after interruption: \(error.localizedDescription)")
-                            self.setState(.error)
-                        }
+                if shouldResume && self._state == .paused {
+                    do {
+                        try self.engine.start()
+                        self.nodeA.play()
+                        if self.nodeBIsConnected { self.nodeB.play() }
+                        self.setState(.playing)
+                        self.logger.info("Interruption ended: resumed")
+                    } catch {
+                        self.logger.error("Failed to restart engine after interruption: \(error.localizedDescription)")
+                        self.setState(.error)
                     }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onInterruption?("ended", shouldResume)
                 }
             @unknown default:
                 break
@@ -893,12 +1238,11 @@ public class LoopAudioEngine {
     /// Must be called from `audioQueue` or before `engine.start()`.
     private func installAmplitudeTap() {
         guard !_tapInstalled else { return }
-        guard onAmplitude != nil else { return }
         _tapInstalled = true
         _lastAmplitudeTime = 0
 
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            guard let self, let onAmplitude = self.onAmplitude else { return }
+            guard let self else { return }
 
             // Throttle to ~20 Hz
             let now = Date.timeIntervalSinceReferenceDate
@@ -925,8 +1269,41 @@ public class LoopAudioEngine {
             }
             let rms = (sumSquares / Float(totalSamples)).squareRoot()
 
-            DispatchQueue.main.async {
-                onAmplitude(min(rms, 1.0), min(peak, 1.0))
+            if let onAmplitude = self.onAmplitude {
+                DispatchQueue.main.async {
+                    onAmplitude(min(rms, 1.0), min(peak, 1.0))
+                }
+            }
+
+            // FFT spectrum
+            if self.spectrumEnabled, let setup = self.fftSetup, let onSpectrum = self.onSpectrum {
+                let fftSize = LoopAudioEngine.fftSize
+                let ch0 = channelData[0]
+                let samples = min(frameCount, fftSize)
+                var realIn  = [Float](repeating: 0, count: fftSize)
+                var imagIn  = [Float](repeating: 0, count: fftSize)
+                var realOut = [Float](repeating: 0, count: fftSize / 2)
+                var imagOut = [Float](repeating: 0, count: fftSize / 2)
+
+                // Apply Hann window
+                for i in 0..<samples {
+                    let w = 0.5 * (1 - cos(2 * .pi * Float(i) / Float(fftSize - 1)))
+                    realIn[i] = ch0[i] * w
+                }
+                vDSP_DFT_Execute(setup, &realIn, &imagIn, &realOut, &imagOut)
+
+                // Magnitude and normalise
+                var mags = [Float](repeating: 0, count: fftSize / 2)
+                for i in 0..<(fftSize / 2) {
+                    let re = realOut[i], im = imagOut[i]
+                    mags[i] = sqrt(re * re + im * im) / Float(fftSize / 2)
+                }
+                // Normalise to [0,1]
+                var maxMag: Float = 1e-6
+                vDSP_maxv(&mags, 1, &maxMag, vDSP_Length(fftSize / 2))
+                if maxMag > 0 { var d = maxMag; vDSP_vsdiv(&mags, 1, &d, &mags, 1, vDSP_Length(fftSize / 2)) }
+
+                DispatchQueue.main.async { onSpectrum(mags) }
             }
         }
         logger.debug("Amplitude tap installed")
