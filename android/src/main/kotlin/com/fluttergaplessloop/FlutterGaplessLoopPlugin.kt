@@ -374,6 +374,11 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 result.success(null)
             }
 
+            "reanalyzeBpm" -> {
+                eng.reanalyzeBpm()
+                result.success(null)
+            }
+
             "getDuration"         -> result.success(eng.duration)
             "getCurrentPosition"  -> result.success(eng.currentTime)
 

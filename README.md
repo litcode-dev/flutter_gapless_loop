@@ -7,7 +7,7 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioE
 - Sample-accurate looping with no audible gap or click at the loop boundary
 - Configurable loop region (start and end points in seconds)
 - Optional crossfade between loop iterations (equal-power)
-- Automatic BPM/tempo detection after every load
+- Automatic BPM/tempo detection after every load, with `reanalyzeBpm()` for on-demand re-analysis
 - Automatic time signature detection (beats per bar + bar timestamps)
 - Real-time amplitude metering via `amplitudeStream` (RMS + peak, ~20 Hz)
 - Load audio from an asset, a file path, raw bytes, or a URL
@@ -24,10 +24,12 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS (AVAudioE
 
 ## Platform support
 
-| Platform | Support | Engine |
-|----------|---------|--------|
-| iOS      | ✅      | AVAudioEngine + AVAudioUnitTimePitch |
-| Android  | ✅      | AudioTrack (API 21+) |
+| Platform | Min version | Engine |
+|----------|-------------|--------|
+| iOS      | 14.0+       | AVAudioEngine + AVAudioUnitTimePitch |
+| Android  | API 21+     | AudioTrack MODE_STREAM |
+
+> **Note:** Pitch shifting (`setPitch`) requires Android API 23+. On API 21–22 the call is a no-op. EQ and reverb use `android.media.audiofx` which requires a valid AudioTrack session — available on all supported API levels.
 
 ## Installation
 
@@ -35,7 +37,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.2
+  flutter_gapless_loop: ^0.0.9
 ```
 
 Then run:

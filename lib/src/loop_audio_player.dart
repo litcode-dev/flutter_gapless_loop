@@ -105,7 +105,8 @@ class LoopAudioPlayer {
             ));
   }
 
-  /// Stream of [BpmResult] emitted automatically after each successful load.
+  /// Stream of [BpmResult] emitted after each successful load and after each
+  /// call to [reanalyzeBpm].
   ///
   /// Fires once per load, shortly after [stateStream] emits [PlayerState.ready],
   /// when the background beat-tracking analysis completes.
@@ -167,6 +168,20 @@ class LoopAudioPlayer {
         .whereType<RemoteCommand>();
   }
 
+  /// Triggers a fresh BPM and meter analysis on the currently loaded file.
+  ///
+  /// The result is emitted on [bpmStream] when the background analysis
+  /// completes, exactly as it is after each [loadFromFile] / [load] call.
+  ///
+  /// Useful when the initial detection returned a low-confidence result, or
+  /// when the loop region has been changed and you want a region-specific BPM.
+  ///
+  /// Does nothing if no file is loaded.
+  Future<void> reanalyzeBpm() async {
+    _checkNotDisposed();
+    await _channel.invokeMethod<void>('reanalyzeBpm', {'playerId': _playerId});
+  }
+
   // ── Loading ───────────────────────────────────────────────────────────────
 
   /// Loads an audio file from a Flutter asset key (e.g. `'assets/loop.wav'`).
@@ -217,11 +232,15 @@ class LoopAudioPlayer {
 
   /// Writes [bytes] to a temp file with the given [extension], calls
   /// [loadFromFile], then deletes the temp file unconditionally.
+  ///
+  /// Uses a random suffix to avoid collisions when multiple calls happen
+  /// within the same millisecond (e.g. simultaneous loads from multiple
+  /// players).
   Future<void> _loadFromBytesWithExtension(
       Uint8List bytes, String extension) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final suffix = math.Random.secure().nextInt(0xFFFFFFFF).toRadixString(16);
     final tmp = File(
-        '${Directory.systemTemp.path}/flutter_gapless_$timestamp.$extension');
+        '${Directory.systemTemp.path}/flutter_gapless_$suffix.$extension');
     try {
       await tmp.writeAsBytes(bytes, flush: true);
       await loadFromFile(tmp.path);
@@ -753,15 +772,25 @@ class LoopAudioPlayer {
     var beatCount = 0;
     final completer = Completer<void>();
     late StreamSubscription<int> sub;
-    sub = metronome.beatStream.listen((beat) async {
-      beatCount++;
-      if (beatCount >= totalBeats) {
-        await sub.cancel();
-        await metronome.stop();
-        if (!_isDisposed) play();
-        completer.complete();
-      }
-    });
+    sub = metronome.beatStream.listen(
+      (beat) async {
+        beatCount++;
+        if (beatCount >= totalBeats) {
+          await sub.cancel();
+          await metronome.stop();
+          if (!_isDisposed) play();
+          if (!completer.isCompleted) completer.complete();
+        }
+      },
+      onError: (_) {
+        if (!completer.isCompleted) completer.complete();
+      },
+      onDone: () {
+        // Metronome stopped externally before count-in finished — complete
+        // without starting playback so the caller's Future doesn't hang.
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
     return completer.future;
   }
 

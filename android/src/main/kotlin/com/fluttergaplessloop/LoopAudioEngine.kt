@@ -1452,6 +1452,18 @@ class LoopAudioEngine(private val context: Context) {
      * so the write thread cannot cause a data race.
      * On completion, invokes [onBpmDetected] on the main thread.
      */
+    /**
+     * Re-triggers BPM detection on the currently loaded buffer.
+     *
+     * The result is dispatched via [onBpmDetected] exactly as after a load.
+     * Does nothing if no buffer is loaded.
+     */
+    fun reanalyzeBpm() {
+        if (pcmBuffer == null) return
+        bpmJob?.cancel()
+        launchBpmDetection()
+    }
+
     private fun launchBpmDetection() {
         val pcm = pcmBuffer ?: return
         val sr  = sampleRate

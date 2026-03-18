@@ -1,4 +1,22 @@
 
+## 0.0.9
+
+### Improvements & bug fixes
+
+* **Fixed: iOS vDSP FFT setup leak** — `vDSP_DFT_DestroySetupD` is now called in `LoopAudioEngine.deinit`, preventing a native memory leak each time a player was garbage-collected.
+
+* **Fixed: iOS remote command double-registration on hot reload** — `MPRemoteCommandCenter` targets are now stored and removed in `FlutterGaplessLoopPlugin.detachFromEngine`, preventing duplicate handlers accumulating across hot restarts.
+
+* **Fixed: `loadFromBytes` temp file collision** — The temporary file name now uses a cryptographically random hex suffix (`Random.secure()`) instead of `DateTime.now().millisecondsSinceEpoch`, eliminating a race condition when multiple players call `loadFromBytes` simultaneously within the same millisecond.
+
+* **Fixed: `playAfterCountIn` hangs when metronome stops externally** — The internal `beatStream` subscription now handles `onDone` and `onError`, completing the returned `Future` immediately if the metronome is stopped before the count-in finishes.
+
+* **New API: `reanalyzeBpm()`** — Triggers a fresh BPM and meter analysis on the currently loaded buffer and emits the result on `bpmStream`. Useful when the initial detection returned a low-confidence result or after changing the loop region.
+
+* **Stricter `analysis_options.yaml`** — Added `strict-casts`, `strict-inference`, `strict-raw-types`, and several lint rules (`cancel_subscriptions`, `unawaited_futures`, `always_declare_return_types`, etc.).
+
+* **Tests** — Added comprehensive tests for all Tier 3 types (`AmplitudeEvent`, `EqSettings`, `CompressorSettings`, `ReverbPreset`, `SpectrumData`, `EffectsPreset`, `WaveformData`, `SilenceInfo`, `LoudnessInfo`), A-B loop points, seek helpers (`seekToNearestBeat`, `seekToBeat`, `seekToBar`), `setLoopRegion` validation, `exportToFile`, and `reanalyzeBpm`.
+
 ## 0.0.8
 
 ### New features (Tier 3 — Production Audio FX)

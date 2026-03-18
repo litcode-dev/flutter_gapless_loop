@@ -256,6 +256,9 @@ public class LoopAudioEngine {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        if let setup = _fftSetup {
+            vDSP_DFT_DestroySetupD(setup)
+        }
     }
 
     // MARK: - Public API
@@ -1359,6 +1362,17 @@ public class LoopAudioEngine {
         _tapInstalled = false
         engine.mainMixerNode.removeTap(onBus: 0)
         logger.debug("Amplitude tap removed")
+    }
+
+    // MARK: - Public: Re-analyse BPM
+
+    /// Re-triggers BPM detection on the currently loaded buffer.
+    ///
+    /// The result is emitted via `onBpmDetected` exactly as it is after a load.
+    /// Does nothing if no buffer is loaded.
+    public func reanalyzeBpm() {
+        guard let buf = originalBuffer else { return }
+        triggerBpmDetection(buffer: buf)
     }
 
     // MARK: - Private: BPM Detection

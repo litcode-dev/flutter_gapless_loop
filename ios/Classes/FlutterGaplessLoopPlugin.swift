@@ -70,8 +70,8 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     // NowPlaying / remote commands
     /// The player ID that currently "owns" MPNowPlayingInfoCenter and remote commands.
     private var activePlayerId: String?
-    /// True once MPRemoteCommandCenter targets have been registered (registered once).
-    private var remoteCommandsRegistered = false
+    /// Opaque tokens returned by addTarget; used to remove handlers on detach.
+    private var remoteCommandTargets: [Any] = []
 
     // MARK: - FlutterPlugin Registration
 
@@ -450,6 +450,10 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             let t = eng.currentTime
             DispatchQueue.main.async { result(t) }
 
+        case "reanalyzeBpm":
+            eng.reanalyzeBpm()
+            DispatchQueue.main.async { result(nil) }
+
         case "dispose":
             eng.dispose()
             engines.removeValue(forKey: pid)
@@ -707,43 +711,52 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         logger.info("clearNowPlayingInfo")
     }
 
-    /// Registers MPRemoteCommandCenter targets exactly once.
-    /// All commands are forwarded to the Dart layer via the event sink,
-    /// tagged with `activePlayerId`. The app is responsible for acting on them.
+    /// Registers MPRemoteCommandCenter targets, storing the returned tokens so
+    /// they can be removed by `tearDownRemoteCommands()` on plugin detach.
     private func setupRemoteCommands() {
-        guard !remoteCommandsRegistered else { return }
-        remoteCommandsRegistered = true
+        guard remoteCommandTargets.isEmpty else { return }
 
         let cc = MPRemoteCommandCenter.shared()
 
-        cc.playCommand.addTarget { [weak self] _ in
-            self?.sendRemoteCommand("play")
-            return .success
-        }
-        cc.pauseCommand.addTarget { [weak self] _ in
-            self?.sendRemoteCommand("pause")
-            return .success
-        }
-        cc.stopCommand.addTarget { [weak self] _ in
-            self?.sendRemoteCommand("stop")
-            return .success
-        }
-        cc.nextTrackCommand.addTarget { [weak self] _ in
-            self?.sendRemoteCommand("nextTrack")
-            return .success
-        }
-        cc.previousTrackCommand.addTarget { [weak self] _ in
-            self?.sendRemoteCommand("previousTrack")
-            return .success
-        }
-        cc.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let seekEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
-            }
-            self?.sendRemoteCommand("seek", position: seekEvent.positionTime)
-            return .success
-        }
+        remoteCommandTargets = [
+            cc.playCommand.addTarget { [weak self] _ in
+                self?.sendRemoteCommand("play"); return .success
+            },
+            cc.pauseCommand.addTarget { [weak self] _ in
+                self?.sendRemoteCommand("pause"); return .success
+            },
+            cc.stopCommand.addTarget { [weak self] _ in
+                self?.sendRemoteCommand("stop"); return .success
+            },
+            cc.nextTrackCommand.addTarget { [weak self] _ in
+                self?.sendRemoteCommand("nextTrack"); return .success
+            },
+            cc.previousTrackCommand.addTarget { [weak self] _ in
+                self?.sendRemoteCommand("previousTrack"); return .success
+            },
+            cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+                guard let seekEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                    return .commandFailed
+                }
+                self?.sendRemoteCommand("seek", position: seekEvent.positionTime)
+                return .success
+            },
+        ]
         logger.info("MPRemoteCommandCenter targets registered")
+    }
+
+    /// Removes all MPRemoteCommandCenter targets registered by this plugin instance.
+    private func tearDownRemoteCommands() {
+        guard !remoteCommandTargets.isEmpty else { return }
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.removeTarget(nil)
+        cc.pauseCommand.removeTarget(nil)
+        cc.stopCommand.removeTarget(nil)
+        cc.nextTrackCommand.removeTarget(nil)
+        cc.previousTrackCommand.removeTarget(nil)
+        cc.changePlaybackPositionCommand.removeTarget(nil)
+        remoteCommandTargets.removeAll()
+        logger.info("MPRemoteCommandCenter targets removed")
     }
 
     private func sendRemoteCommand(_ command: String, position: Double? = nil) {
@@ -757,6 +770,19 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
         DispatchQueue.main.async { [weak self] in
             self?.eventSink?(payload)
         }
+    }
+
+    /// Called when the Flutter engine detaches this plugin (e.g. hot restart).
+    /// Removes remote command targets so a fresh registration on the next attach
+    /// doesn't accumulate duplicate handlers.
+    public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+        tearDownRemoteCommands()
+        engines.values.forEach { $0.dispose() }
+        engines.removeAll()
+        metronomes.values.forEach { $0.dispose() }
+        metronomes.removeAll()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        logger.info("Detached from engine")
     }
 
     @discardableResult
