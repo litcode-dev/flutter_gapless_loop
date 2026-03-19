@@ -48,6 +48,11 @@ class LoopAudioPlayer {
 
   bool _isDisposed = false;
 
+  /// Whether this player has been disposed and can no longer be used.
+  bool get isDisposed => _isDisposed;
+
+  double _lastKnownPosition = 0.0;
+
   double _localVolume = 1.0;
   double _localPan    = 0.0;
 
@@ -275,6 +280,7 @@ class LoopAudioPlayer {
   /// Stops playback and resets the playback position.
   Future<void> stop() async {
     _checkNotDisposed();
+    _lastKnownPosition = 0.0;
     await _channel.invokeMethod<void>('stop', {'playerId': _playerId});
   }
 
@@ -333,6 +339,7 @@ class LoopAudioPlayer {
   /// Seeks to [seconds] within the loaded file.
   Future<void> seek(double seconds) async {
     _checkNotDisposed();
+    _lastKnownPosition = seconds;
     await _channel.invokeMethod<void>(
         'seek', {'playerId': _playerId, 'position': seconds});
   }
@@ -351,6 +358,13 @@ class LoopAudioPlayer {
     return await _channel.invokeMethod<double>(
         'getCurrentPosition', {'playerId': _playerId}) ?? 0.0;
   }
+
+  /// The last known playback position in seconds, updated synchronously on
+  /// [seek] and [stop] without a round-trip to the native layer.
+  ///
+  /// Use this as a lightweight hint when an exact value is not critical.
+  /// For an accurate current position use [currentPosition].
+  double get lastKnownPosition => _lastKnownPosition;
 
   // ── Tier 1: setPitch ──────────────────────────────────────────────────────
 

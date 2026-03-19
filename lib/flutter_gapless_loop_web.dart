@@ -87,7 +87,7 @@ class FlutterGaplessLoopWeb {
         return null;
 
       case 'play':
-        _players[playerId]?.play();
+        await _players[playerId]?.play();
         return null;
 
       case 'pause':
@@ -276,8 +276,13 @@ class _WebPlayer {
     _emitState('ready');
   }
 
-  void play() {
+  Future<void> play() async {
     if (_buffer == null) return;
+    // Resume the AudioContext if it was suspended by the browser's autoplay
+    // policy. A user gesture (tap/click) is required before audio can start.
+    if (ctx.state == 'suspended') {
+      await ctx.resume().toDart;
+    }
     _stopSource();
     _createSource();
     _seekOffset = _loopStart;
@@ -350,8 +355,13 @@ class _WebPlayer {
   }
 
   void setCrossfadeDuration(double d) {
-    // Crossfade requires custom AudioWorklet for true equal-power crossfade 
-    // at the loop boundary.
+    // Crossfade requires a custom AudioWorklet for sample-accurate equal-power
+    // crossfade at the loop boundary, which is not supported on web.
+    throw UnsupportedError(
+      'setCrossfadeDuration is not supported on web. '
+      'Crossfade requires a custom AudioWorklet for sample-accurate '
+      'loop-boundary processing.',
+    );
   }
 
   void setPlaybackRate(double r) {
