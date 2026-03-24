@@ -65,6 +65,9 @@ void LoopAudioEngine::TeardownDevice() {
 
 void LoopAudioEngine::DataCallback(ma_device* pDev, void* pOut,
                                     const void*, ma_uint32 frameCount) {
+    // INVARIANT: all non-atomic fields read here (fullPcm_, loopStartFrame_,
+    // loopEndFrame_, xfadeFrames_, xfadeOut_, xfadeIn_) must only be mutated
+    // while the device is stopped (ma_device_stop called before write).
     auto* self = static_cast<LoopAudioEngine*>(pDev->pUserData);
     float* out = static_cast<float*>(pOut);
     const int ch = static_cast<int>(pDev->playback.channels);
@@ -75,7 +78,6 @@ void LoopAudioEngine::DataCallback(ma_device* pDev, void* pOut,
     }
 
     const float* pcm       = self->fullPcm_.data();
-    const auto   totalPcm  = static_cast<int64_t>(self->fullPcm_.size() / ch);
     const int64_t loopStart = static_cast<int64_t>(self->loopStartFrame_);
     const int64_t loopEnd   = static_cast<int64_t>(self->loopEndFrame_);
     const float   rate      = self->rate_.load(std::memory_order_relaxed);
@@ -91,6 +93,8 @@ void LoopAudioEngine::DataCallback(ma_device* pDev, void* pOut,
         // Wrap read position
         while (self->readPos_ >= static_cast<double>(loopEnd))
             self->readPos_ -= static_cast<double>(loopEnd - loopStart);
+        if (self->readPos_ < static_cast<double>(loopStart))
+            self->readPos_ = static_cast<double>(loopStart);
 
         const int64_t frame = static_cast<int64_t>(self->readPos_);
         const float   frac  = static_cast<float>(self->readPos_ - frame);

@@ -86,8 +86,11 @@ void MetronomeEngine::MixInto(std::vector<float>& dest, uint64_t destFrames,
                                int channels, uint64_t offsetFrame) {
     const uint64_t copyFrames = std::min(srcFrames, destFrames - offsetFrame);
     for (uint64_t f = 0; f < copyFrames; ++f)
-        for (int c = 0; c < channels; ++c)
+        for (int c = 0; c < channels; ++c) {
             dest[(offsetFrame + f) * channels + c] += src[f * channels + c];
+            dest[(offsetFrame + f) * channels + c] = std::clamp(
+                dest[(offsetFrame + f) * channels + c], -1.0f, 1.0f);
+        }
 }
 
 // ── BuildBarBuffer ────────────────────────────────────────────────────────────
@@ -209,6 +212,8 @@ void MetronomeEngine::SetBpm(double bpm) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!isRunning_) return;
     currentBpm_ = bpm;
+    // Note: RebuildAndRestart joins the beat thread (StopBeatTimer). At low BPM
+    // this can block for up to one beat period. Matches Windows behaviour.
     RebuildAndRestart();
 }
 
@@ -216,6 +221,8 @@ void MetronomeEngine::SetBeatsPerBar(int bpb) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!isRunning_) return;
     currentBeatsPerBar_ = bpb;
+    // Note: RebuildAndRestart joins the beat thread (StopBeatTimer). At low BPM
+    // this can block for up to one beat period. Matches Windows behaviour.
     RebuildAndRestart();
 }
 
