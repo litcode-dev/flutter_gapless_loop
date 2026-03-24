@@ -272,17 +272,20 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 return
             }
             let url = URL(fileURLWithPath: path)
-            do {
-                try eng.loadFile(url: url)
-                DispatchQueue.main.async { result(nil) }
-            } catch {
-                logger.error("loadFile failed: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    result(FlutterError(
-                        code: "LOAD_FAILED",
-                        message: error.localizedDescription,
-                        details: nil
-                    ))
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                do {
+                    try eng.loadFile(url: url)
+                    DispatchQueue.main.async { result(nil) }
+                } catch {
+                    self.logger.error("loadFile failed: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "LOAD_FAILED",
+                            message: error.localizedDescription,
+                            details: nil
+                        ))
+                    }
                 }
             }
 
@@ -306,17 +309,20 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
                 return
             }
             let url = URL(fileURLWithPath: assetPath)
-            do {
-                try eng.loadFile(url: url)
-                DispatchQueue.main.async { result(nil) }
-            } catch {
-                logger.error("loadAsset failed: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    result(FlutterError(
-                        code: "LOAD_FAILED",
-                        message: error.localizedDescription,
-                        details: nil
-                    ))
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                do {
+                    try eng.loadFile(url: url)
+                    DispatchQueue.main.async { result(nil) }
+                } catch {
+                    self.logger.error("loadAsset failed: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "LOAD_FAILED",
+                            message: error.localizedDescription,
+                            details: nil
+                        ))
+                    }
                 }
             }
 
