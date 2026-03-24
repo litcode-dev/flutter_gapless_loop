@@ -396,7 +396,10 @@ double LoopAudioEngine::GetDuration() const {
 }
 
 double LoopAudioEngine::GetCurrentPosition() const {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    // readPos_ is written by the audio callback without a lock (lock-free hot path).
+    // This read may race with the callback — the returned value is best-effort and
+    // may be slightly stale. Acquiring stateMutex_ only prevents concurrent
+    // main-thread calls from racing each other, not the callback.
     return readPos_ / static_cast<double>(sampleRate_ > 0 ? sampleRate_ : 44100);
 }
 
