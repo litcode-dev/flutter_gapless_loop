@@ -30,6 +30,7 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS, Android,
 | Android  | ✅      | AudioTrack (API 21+) |
 | macOS    | ✅      | AVAudioEngine + AVAudioUnitTimePitch (macOS 11.0+) |
 | Windows  | ✅      | XAudio2 2.9 + MediaFoundation (Windows 10+) |
+| Linux    | ✅      | miniaudio 0.11.21 (PipeWire / PulseAudio / ALSA) + libcurl (Ubuntu 20.04+) |
 
 ## Installation
 
@@ -37,7 +38,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_gapless_loop: ^0.0.7
+  flutter_gapless_loop: ^0.0.9
 ```
 
 Then run:
@@ -594,6 +595,7 @@ A 5 ms linear micro-fade is applied to both ends of every loop buffer at load ti
 - **Minimum Flutter version:** 3.27.0 (required for Swift Package Manager as the default build system).
 - **Minimum iOS version:** 14.0 (required by `os.log.Logger`).
 - **Minimum macOS version:** 11.0 (required by `os.log.Logger`).
+- **Minimum Linux:** Ubuntu 20.04+ (glibc 2.31+). `libcurl` must be installed (`sudo apt install libcurl4-openssl-dev` for development; it ships by default on most desktop distros).
 - **`loadFromUrl`** uses the platform networking stack (`URLSession` on iOS/macOS, `HttpURLConnection` on Android, `URLDownloadToFileW` on Windows). No additional packages are required.
 
 ## License

@@ -1,13 +1,14 @@
-
 ## 0.0.9
 
-### Bug fixes
+### New platforms
 
-* **iOS: fix overlapping `inout` access in FFT normalisation.** `vDSP_vsdiv` was passed `&mags` as both input and output, violating Swift's memory exclusivity rules (*overlapping accesses to 'mags', but modification requires exclusive access*). The input is now copied to a local `src` variable before the call.
+* **Linux support.** Full implementation using [miniaudio](https://miniaud.io) v0.11.21 (PipeWire / PulseAudio / ALSA auto-selected at runtime) for audio output and decode, plus `libcurl` for URL loading. All four playback modes (full/region × with/without crossfade), BPM/time-signature detection, equal-power crossfade, metronome, real-time amplitude metering, stereo pan, volume, seek, and playback rate are supported. Minimum: Ubuntu 20.04+ / glibc 2.31+.
 
 ## 0.0.8
 
 ### Bug fixes
+
+* **iOS: fix overlapping `inout` access in FFT normalisation.** `vDSP_vsdiv` was passed `&mags` as both input and output, violating Swift's memory exclusivity rules (*overlapping accesses to 'mags', but modification requires exclusive access*). The input is now copied to a local `src` variable before the call.
 
 * **iOS: `clamped(to:)` extension added.** `Float.clamped(to:)` is not publicly available in the Swift standard library — the `package` protection level on the stdlib internal made calls to it fail with *'clamped' is inaccessible due to 'package' protection level*. A `private extension Comparable` providing `clamped(to:)` is now defined in `LoopAudioEngine.swift`.
 
