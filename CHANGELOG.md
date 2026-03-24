@@ -1,5 +1,9 @@
 ## 0.0.9
 
+### Build system
+
+* **Swift sources moved to SPM-standard layout.** `darwin/Sources/flutter_gapless_loop/` replaces `darwin/Classes/` as the Swift source directory, satisfying pana's SPM directory check and fixing the pub.dev "Package does not support Swift Package Manager" score for iOS and macOS. `darwin/Package.swift` and all three CocoaPods podspecs updated accordingly.
+
 ### New platforms
 
 * **Linux support.** Full implementation using [miniaudio](https://miniaud.io) v0.11.21 (PipeWire / PulseAudio / ALSA auto-selected at runtime) for audio output and decode, plus `libcurl` for URL loading. All four playback modes (full/region × with/without crossfade), BPM/time-signature detection, equal-power crossfade, metronome, real-time amplitude metering, stereo pan, volume, seek, and playback rate are supported. Minimum: Ubuntu 20.04+ / glibc 2.31+.
