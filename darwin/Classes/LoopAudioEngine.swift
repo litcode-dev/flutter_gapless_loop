@@ -3,6 +3,14 @@ import AVFoundation
 import Accelerate
 import os.log
 
+// MARK: - Private Helpers
+
+private extension Comparable {
+    func clamped(to limits: ClosedRange<Self>) -> Self {
+        min(max(self, limits.lowerBound), limits.upperBound)
+    }
+}
+
 // MARK: - Public Types
 
 /// The operational state of [LoopAudioEngine].
@@ -640,7 +648,7 @@ public class LoopAudioEngine {
     /// Trims leading/trailing silence by applying a loop region.
     public func trimSilence(threshold: Float, minDuration: Double) {
         guard let buf = originalBuffer else { return }
-        guard let channelData = buf.floatChannelData else { return [] as Void }
+        guard let channelData = buf.floatChannelData else { return }
         let ch0 = channelData[0]
         let frameCount = Int(buf.frameLength)
         let sr = buf.format.sampleRate
@@ -779,7 +787,7 @@ public class LoopAudioEngine {
             let au = node.audioUnit
             AudioUnitSetParameter(au, kDynamicsProcessorParam_Threshold,
                                   kAudioUnitScope_Global, 0, threshold, 0)
-            AudioUnitSetParameter(au, kDynamicsProcessorParam_MasterGain,
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_OverallGain,
                                   kAudioUnitScope_Global, 0, makeupGain, 0)
             AudioUnitSetParameter(au, kDynamicsProcessorParam_AttackTime,
                                   kAudioUnitScope_Global, 0, attackMs / 1000.0, 0)

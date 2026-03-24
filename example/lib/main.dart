@@ -114,10 +114,13 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   void _startPositionTimer() {
     _positionTimer?.cancel();
+    // Show last known position immediately (synchronous) while the first
+    // async currentPosition call is in flight.
+    setState(() => _position = _player.lastKnownPosition);
     _positionTimer = Timer.periodic(const Duration(milliseconds: 200), (_) async {
-      if (!mounted) return;
+      if (!mounted || _player.isDisposed) return;
       final pos = await _player.currentPosition;
-      setState(() => _position = pos);
+      if (mounted) setState(() => _position = pos);
     });
   }
 
@@ -172,7 +175,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   Future<void> _stop() async {
     try {
       await _player.stop();
-      setState(() => _position = 0.0);
+      setState(() => _position = _player.lastKnownPosition);
     } catch (e) {
       _onError(e.toString());
     }

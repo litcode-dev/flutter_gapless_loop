@@ -1,5 +1,34 @@
 
+## 0.0.8
+
+### Bug fixes
+
+* **iOS: `clamped(to:)` extension added.** `Float.clamped(to:)` is not publicly available in the Swift standard library — the `package` protection level on the stdlib internal made calls to it fail with *'clamped' is inaccessible due to 'package' protection level*. A `private extension Comparable` providing `clamped(to:)` is now defined in `LoopAudioEngine.swift`.
+
+* **iOS: `trimSilence` spurious `return` removed.** The `guard` in `trimSilence` incorrectly used `return [] as Void`, which the compiler rejected as *unexpected non-void return value in void function*. Fixed to a bare `return`.
+
+* **iOS: `kDynamicsProcessorParam_OverallGain` used in `setCompressor`.** `kDynamicsProcessorParam_MasterGain` was removed in iOS 7; its Swift-visible name is now `kDynamicsProcessorParam_OverallGain`. Updated accordingly.
+
 ## 0.0.7
+
+### Bug fixes
+
+* **iOS: `loadFile` runs on a background queue.** `AVAudioFile(forReading:)` and `buffer.read(into:)` are synchronous I/O calls. Previously both the `'load'` and `'loadAsset'` method channel handlers invoked `loadFile` directly on the platform channel handler thread (the main thread), blocking the Flutter UI for the full duration of audio decoding. Both handlers now dispatch `loadFile` to `DispatchQueue.global(qos: .userInitiated)` and return the Flutter result on `DispatchQueue.main`. The `'loadUrl'` handler is unaffected — its `loadFile` call already runs inside a `URLSession.dataTask` completion block on a background thread.
+
+* **iOS: `sessionConfigured` access level corrected.** `LoopAudioEngine.sessionConfigured` was declared `private static` in `LoopAudioEngine.swift` but accessed from `FlutterGaplessLoopPlugin.swift` in the same module. In Swift, `private` is file-scoped — this cross-file reference would fail to compile. Changed to `internal static` (Swift's default), which is correct: the property is reset by the plugin on `detachFromEngine` (hot restart) and must be visible within the module without being part of the public API.
+
+* **Web: `AudioContext` auto-resumed on `play()`.** Browsers suspend the `AudioContext` until a user gesture occurs. Calling `play()` without prior interaction would silently fail because the context remained `suspended`. `play()` now calls `AudioContext.resume()` before scheduling playback, conforming to the Web Audio API autoplay policy.
+
+* **Web: `setCrossfadeDuration` throws `UnsupportedError`.** The web implementation previously ignored crossfade duration changes silently. It now throws `UnsupportedError('setCrossfadeDuration is not supported on web')` so callers receive explicit feedback.
+
+* **Dart/IO: temp file names include a random nonce.** `loadFromBytes` and `loadFromUrl` write audio data to a temporary file whose name previously used only a millisecond timestamp, creating a collision window under concurrent calls. The name now includes a 32-bit random suffix, making collisions practically impossible.
+
+### New API
+
+* **`LoopAudioPlayer.isDisposed`** — synchronous `bool` getter. Returns `true` after `dispose()` has been called. Use this to guard cleanup code or check lifecycle state without async overhead.
+
+* **`LoopAudioPlayer.lastKnownPosition`** — synchronous `double` getter (seconds). Updated by `seek()` and reset to `0.0` by `stop()`. Use this for non-critical UI reads that can tolerate a slightly stale value; use `currentPosition` (async) when an exact native-layer position is required.
+
 
 ### Build system
 

@@ -195,6 +195,8 @@ await player.play();
 
 Set to `0.0` (default) to disable crossfade and use the lowest-latency loop path. The crossfade duration must be less than half the loop region length.
 
+> **Web:** Crossfade is not supported on the web platform. Calling `setCrossfadeDuration` with a non-zero value throws `UnsupportedError`.
+
 ### Seek
 
 ```dart
@@ -457,7 +459,9 @@ All methods throw `StateError` if called after `dispose()`.
 | `setPlaybackRate(double rate)` | Speed multiplier in `[0.25, 4.0]`, pitch-preserving. |
 | `seek(double seconds)` | Seek to position in seconds. |
 | `duration` | `Future<Duration>` — total length of loaded file. |
-| `currentPosition` | `Future<double>` — current playback position in seconds. |
+| `currentPosition` | `Future<double>` — current playback position in seconds (exact, from native engine). |
+| `lastKnownPosition` | `double` — last position recorded synchronously by `seek()` or `stop()`. Slightly stale but allocation-free; suitable for non-critical UI reads. |
+| `isDisposed` | `bool` — `true` after `dispose()` has been called. |
 | `stateStream` | `Stream<PlayerState>` — state changes from native layer. |
 | `errorStream` | `Stream<String>` — error messages from native layer. |
 | `routeChangeStream` | `Stream<RouteChangeEvent>` — audio route changes. |
