@@ -13,7 +13,7 @@ let package = Package(
     targets: [
         .target(
             name: "flutter_gapless_loop",
-            path: "Classes"
+            path: "Sources/flutter_gapless_loop"
         ),
     ]
 )
