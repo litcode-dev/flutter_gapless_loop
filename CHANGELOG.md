@@ -1,4 +1,10 @@
 
+## 0.0.9
+
+### Bug fixes
+
+* **iOS: fix overlapping `inout` access in FFT normalisation.** `vDSP_vsdiv` was passed `&mags` as both input and output, violating Swift's memory exclusivity rules (*overlapping accesses to 'mags', but modification requires exclusive access*). The input is now copied to a local `src` variable before the call.
+
 ## 0.0.8
 
 ### Bug fixes

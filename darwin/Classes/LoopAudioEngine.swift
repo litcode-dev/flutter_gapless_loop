@@ -1346,7 +1346,7 @@ public class LoopAudioEngine {
                 // Normalise to [0,1]
                 var maxMag: Float = 1e-6
                 vDSP_maxv(&mags, 1, &maxMag, vDSP_Length(fftSize / 2))
-                if maxMag > 0 { var d = maxMag; vDSP_vsdiv(&mags, 1, &d, &mags, 1, vDSP_Length(fftSize / 2)) }
+                if maxMag > 0 { var d = maxMag; var src = mags; vDSP_vsdiv(&src, 1, &d, &mags, 1, vDSP_Length(fftSize / 2)) }
 
                 DispatchQueue.main.async { onSpectrum(mags) }
             }
