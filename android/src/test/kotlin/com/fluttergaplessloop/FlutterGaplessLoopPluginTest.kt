@@ -3,6 +3,7 @@ package com.fluttergaplessloop
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LoopEngineErrorTest {
@@ -426,5 +427,30 @@ class MetronomeEngineTest {
         for (i in 50 until beatFrames) {
             assertEquals(0f, bar[i], "Expected silence at frame $i")
         }
+    }
+}
+
+class PlayOnceBehaviourTest {
+
+    // resolveLoopWrap(isLooping, currentFrame, regionStart) returns:
+    //   regionStart  — when looping (wrap back to start)
+    //   null         — when one-shot (signal completion)
+
+    @Test
+    fun `resolveLoopWrap wraps to regionStart when looping`() {
+        val result = resolveLoopWrap(isLooping = true, currentFrame = 100, regionStart = 42)
+        assertEquals(42, result)
+    }
+
+    @Test
+    fun `resolveLoopWrap returns null when not looping`() {
+        val result = resolveLoopWrap(isLooping = false, currentFrame = 100, regionStart = 42)
+        assertNull(result)
+    }
+
+    @Test
+    fun `resolveLoopWrap returns regionStart=0 for full-file loop`() {
+        val result = resolveLoopWrap(isLooping = true, currentFrame = 88200, regionStart = 0)
+        assertEquals(0, result)
     }
 }
