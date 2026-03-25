@@ -65,6 +65,14 @@ internal fun panToGains(pan: Float): Pair<Float, Float> {
 }
 
 /**
+ * Determines the next frame position at a loop wrap point.
+ *
+ * @return [regionStart] when looping, or `null` when playing once (signals end of playback).
+ */
+internal fun resolveLoopWrap(isLooping: Boolean, currentFrame: Int, regionStart: Int): Int? =
+    if (isLooping) regionStart else null
+
+/**
  * Core audio engine for sample-accurate gapless looping on Android.
  *
  * ## Playback Modes (auto-selected based on configuration)
@@ -180,6 +188,9 @@ class LoopAudioEngine(private val context: Context) {
 
     /** Signals the write thread to exit its loop. */
     @Volatile private var stopRequested = false
+
+    /** True = loop indefinitely (default); false = play once then stop. */
+    @Volatile private var isLooping: Boolean = true
 
     /** Signals the write thread to suspend on [pauseSemaphore]. */
     @Volatile private var pauseRequested = false
@@ -299,13 +310,15 @@ class LoopAudioEngine(private val context: Context) {
     /**
      * Starts playback from [loopStartFrame].
      *
+     * @param loop true (default) = gapless loop; false = play once then stop.
      * Requests audio focus before starting. Fires [onError] and returns if focus denied.
      */
-    fun play() {
+    fun play(loop: Boolean = true) {
         if (_state != EngineState.Ready && _state != EngineState.Stopped) {
             Log.w(TAG, "play() ignored: state=$_state")
             return
         }
+        isLooping = loop
         if (!sessionManager.requestAudioFocus()) {
             onError?.invoke(
                 LoopEngineError.AudioFocusDenied("AudioManager denied AUDIOFOCUS_GAIN")
@@ -640,6 +653,22 @@ class LoopAudioEngine(private val context: Context) {
     // ─── Private: write thread ────────────────────────────────────────────────
 
     /**
+     * Called from the write thread when one-shot playback reaches the end of the region.
+     *
+     * Pauses and flushes the [AudioTrack], resets the play cursor, and dispatches
+     * [EngineState.Stopped] to Flutter via [engineScope].
+     */
+    private fun handlePlaybackComplete() {
+        val localTrack = audioTrack
+        localTrack?.pause()
+        localTrack?.flush()
+        currentFrameAtomic.set(loopStartFrame.toLong())
+        sessionManager.abandonAudioFocus()
+        engineScope.launch { setState(EngineState.Stopped) }
+        Log.i(TAG, "handlePlaybackComplete: one-shot playback finished")
+    }
+
+    /**
      * Starts the audio write thread.
      *
      * The write thread:
@@ -697,6 +726,7 @@ class LoopAudioEngine(private val context: Context) {
 
                     // ── Fill writeBuffer with loop-wrapped PCM ─────────────────
                     var writeIdx = 0
+                    var playbackComplete = false
                     while (writeIdx < chunkSamples && !stopRequested && !pauseRequested) {
                         if (currentFrame >= regionEnd) {
                             // Loop boundary — insert crossfade block if configured
@@ -705,8 +735,15 @@ class LoopAudioEngine(private val context: Context) {
                                 cfBlock.copyInto(writeBuffer, writeIdx)
                                 writeIdx += cfBlock.size
                             }
-                            // Wrap back to loop start (Mode A/C: start=0, Mode B/D: custom)
-                            currentFrame = regionStart
+                            // Wrap or stop depending on loop mode
+                            val nextFrame = resolveLoopWrap(isLooping, currentFrame, regionStart)
+                            if (nextFrame == null) {
+                                // One-shot: signal end-of-playback after writing final samples
+                                stopRequested = true
+                                playbackComplete = true
+                                break
+                            }
+                            currentFrame = nextFrame
                         }
 
                         // Copy as many samples as possible before hitting regionEnd
@@ -763,6 +800,12 @@ class LoopAudioEngine(private val context: Context) {
                                 }
                             }
                         }
+                    }
+
+                    // ── One-shot completion ────────────────────────────────────
+                    if (playbackComplete) {
+                        handlePlaybackComplete()
+                        break
                     }
                 }
             } catch (e: Exception) {

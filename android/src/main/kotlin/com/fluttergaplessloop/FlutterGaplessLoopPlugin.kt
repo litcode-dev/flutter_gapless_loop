@@ -245,7 +245,11 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
                 }
             }
 
-            "play"   -> { eng.play();   result.success(null) }
+            "play"   -> {
+                val loop = (call.argument<Boolean>("loop")) ?: true
+                eng.play(loop = loop)
+                result.success(null)
+            }
             "pause"  -> { eng.pause();  result.success(null) }
             "stop"   -> { eng.stop();   result.success(null) }
             "resume" -> { eng.resume(); result.success(null) }
