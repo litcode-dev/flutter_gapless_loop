@@ -43,6 +43,19 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
   double _crossfade = 0.0; // 0 to 0.5 seconds
   double _volume = 1.0;
   double _pan = 0.0;
+  bool _loop = true;
+
+  // EQ
+  bool   _eqEnabled = false;
+  double _eqLow     = 0.0;
+  double _eqMid     = 0.0;
+  double _eqHigh    = 0.0;
+
+  // Cutoff filter
+  bool       _cutoffEnabled    = false;
+  FilterType _cutoffType       = FilterType.lowPass;
+  double     _cutoffHz         = 20000.0;
+  double     _cutoffResonance  = 0.707;
 
   // BPM controls
   double _detectedBpm = 0.0; // auto-detected; used as rate base
@@ -158,7 +171,7 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
 
   Future<void> _play() async {
     try {
-      await _player.play();
+      await _player.play(loop: _loop);
     } catch (e) {
       _onError(e.toString());
     }
@@ -258,6 +271,47 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
       _loopEnd   = newEnd;
     });
     _setLoopRegion();
+  }
+
+  Future<void> _setEq() async {
+    try {
+      if (!_eqEnabled) {
+        await _player.resetEq();
+      } else {
+        await _player.setEq(
+          EqSettings(lowGainDb: _eqLow, midGainDb: _eqMid, highGainDb: _eqHigh),
+        );
+      }
+    } catch (e) {
+      _onError(e.toString());
+    }
+  }
+
+  Future<void> _resetEqToFlat() async {
+    setState(() { _eqLow = 0.0; _eqMid = 0.0; _eqHigh = 0.0; _eqEnabled = false; });
+    try {
+      await _player.resetEq();
+    } catch (e) {
+      _onError(e.toString());
+    }
+  }
+
+  Future<void> _setCutoff() async {
+    try {
+      if (!_cutoffEnabled) {
+        await _player.resetCutoffFilter();
+      } else {
+        await _player.setCutoffFilter(
+          CutoffFilterSettings(
+            type:      _cutoffType,
+            cutoffHz:  _cutoffHz,
+            resonance: _cutoffResonance,
+          ),
+        );
+      }
+    } catch (e) {
+      _onError(e.toString());
+    }
   }
 
   Future<void> _setPan(double value) async {
@@ -364,7 +418,27 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
               ],
             ),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 12),
+
+            // ── Loop Mode toggle ───────────────────────────────────
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text('Loop'),
+                Switch(
+                  value: _loop,
+                  onChanged: _isReady
+                      ? (v) => setState(() => _loop = v)
+                      : null,
+                ),
+                Text(
+                  _loop ? 'Looping' : 'Play once',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
             const Divider(),
 
             // ── Loop region ────────────────────────────────────────
@@ -460,6 +534,152 @@ class _GaplessLoopScreenState extends State<GaplessLoopScreen> {
                     max: 1.0,
                     divisions: 100,
                     onChanged: _isReady ? _setVolume : null,
+                  ),
+                ),
+              ],
+            ),
+
+            const Divider(),
+
+            // ── EQ ─────────────────────────────────────────────────
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('3-Band EQ', style: Theme.of(context).textTheme.titleSmall),
+                Row(
+                  children: [
+                    Switch(
+                      value: _eqEnabled,
+                      onChanged: _isReady
+                          ? (v) { setState(() => _eqEnabled = v); _setEq(); }
+                          : null,
+                    ),
+                    TextButton(
+                      onPressed: _isReady ? _resetEqToFlat : null,
+                      child: const Text('Flat'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            for (final band in [
+              ('Low (80 Hz)',  () => _eqLow,  (double v) { setState(() => _eqLow  = v); }),
+              ('Mid (1 kHz)',  () => _eqMid,  (double v) { setState(() => _eqMid  = v); }),
+              ('High (10 kHz)', () => _eqHigh, (double v) { setState(() => _eqHigh = v); }),
+            ])
+              Row(
+                children: [
+                  SizedBox(
+                    width: 90,
+                    child: Text(band.$1, style: Theme.of(context).textTheme.bodySmall),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: band.$2(),
+                      min: -12.0,
+                      max:  12.0,
+                      divisions: 48,
+                      onChanged: _isReady && _eqEnabled
+                          ? (v) { band.$3(v); _setEq(); }
+                          : null,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 48,
+                    child: Text(
+                      '${band.$2() >= 0 ? '+' : ''}${band.$2().toStringAsFixed(1)} dB',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                ],
+              ),
+
+            const Divider(),
+
+            // ── Cutoff Filter ──────────────────────────────────────
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Cutoff Filter', style: Theme.of(context).textTheme.titleSmall),
+                Row(
+                  children: [
+                    Switch(
+                      value: _cutoffEnabled,
+                      onChanged: _isReady
+                          ? (v) { setState(() => _cutoffEnabled = v); _setCutoff(); }
+                          : null,
+                    ),
+                    SegmentedButton<FilterType>(
+                      segments: const [
+                        ButtonSegment(value: FilterType.lowPass,  label: Text('LP')),
+                        ButtonSegment(value: FilterType.highPass, label: Text('HP')),
+                      ],
+                      selected: {_cutoffType},
+                      onSelectionChanged: _isReady && _cutoffEnabled
+                          ? (s) { setState(() => _cutoffType = s.first); _setCutoff(); }
+                          : null,
+                      style: const ButtonStyle(
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                SizedBox(
+                  width: 90,
+                  child: Text('Cutoff Hz', style: Theme.of(context).textTheme.bodySmall),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: _cutoffHz,
+                    min: 20.0,
+                    max: 20000.0,
+                    divisions: 200,
+                    onChanged: _isReady && _cutoffEnabled
+                        ? (v) { setState(() => _cutoffHz = v); _setCutoff(); }
+                        : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 60,
+                  child: Text(
+                    _cutoffHz >= 1000
+                        ? '${(_cutoffHz / 1000).toStringAsFixed(1)}k'
+                        : _cutoffHz.toStringAsFixed(0),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.right,
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                SizedBox(
+                  width: 90,
+                  child: Text('Resonance', style: Theme.of(context).textTheme.bodySmall),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: _cutoffResonance,
+                    min: 0.1,
+                    max: 10.0,
+                    divisions: 99,
+                    onChanged: _isReady && _cutoffEnabled
+                        ? (v) { setState(() => _cutoffResonance = v); _setCutoff(); }
+                        : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    _cutoffResonance.toStringAsFixed(2),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.right,
                   ),
                 ),
               ],
