@@ -1,0 +1,4 @@
+# Internal development artefacts — not useful to package consumers.
+doc/docs/
+doc/plans/
+doc/superpowers/
