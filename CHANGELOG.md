@@ -1,3 +1,46 @@
+## 0.0.10
+
+### New features
+
+* **Play-once mode.** `play()` now accepts an optional named parameter: `play({bool loop = true})`. Pass `loop: false` to play through the file (or loop region) exactly once; `stateStream` emits `PlayerState.stopped` when the end is reached. The default is `true`, so all existing callers continue to loop without any changes. Implemented natively on iOS, macOS, Android, and Windows.
+
+* **3-band EQ (iOS, macOS, Android, Windows).** A real-time parametric equaliser applies three biquad filters to every audio chunk in the playback pipeline:
+  * `setEq(EqSettings)` — low shelf at 80 Hz, peaking at 1 kHz, high shelf at 10 kHz. Each band is ±12 dB. Settings take effect immediately without a file reload.
+  * `resetEq()` — restores all three bands to 0 dB.
+
+* **Cutoff filter (iOS, macOS, Android, Windows).** A single-pole biquad low-pass or high-pass filter, applied after the EQ in the signal chain:
+  * `setCutoffFilter(CutoffFilterSettings)` — configure `FilterType.lowPass` or `FilterType.highPass`, cutoff frequency (20–20000 Hz), and resonance (Q factor, default 0.707 = Butterworth).
+  * `resetCutoffFilter()` — bypasses the filter.
+
+* **Reverb (iOS, macOS).** `setReverb(ReverbPreset, {double wetMix = 0.3})` applies one of seven built-in room simulations: `smallRoom`, `mediumRoom`, `largeRoom`, `mediumHall`, `largeHall`, `plate`, `cathedral`. `wetMix` controls the blend from 0.0 (dry) to 1.0 (fully wet).
+
+* **Compressor (iOS, macOS).** `setCompressor(CompressorSettings)` applies dynamic range compression with configurable threshold (dB), makeup gain (dB), attack time (ms), and release time (ms).
+
+* **Pitch shift (iOS, macOS).** `setPitch(double semitones)` shifts pitch by ±24 semitones without affecting playback speed. Independent of `setPlaybackRate`.
+
+* **FFT spectrum analyser (iOS, macOS).** Real-time 256-bin FFT data for visualisers and meters:
+  * `enableSpectrum()` / `disableSpectrum()` — start or stop analysis.
+  * `spectrumStream` — `Stream<SpectrumData>` emitting normalised `[0, 1]` magnitude bins from low to high frequency at ~20 Hz.
+
+* **Volume fades (iOS, macOS).** Smooth gain ramps handled natively at 100 Hz:
+  * `fadeTo(double targetVolume, Duration duration)` — fade to any target volume.
+  * `fadeIn(Duration duration)` — shorthand for `fadeTo(1.0, duration)`.
+  * `fadeOut(Duration duration)` — shorthand for `fadeTo(0.0, duration)`.
+
+* **Export to file (iOS, macOS).** `exportToFile(String outputPath, {ExportFormat format})` renders the currently loaded audio (with all active DSP effects applied) to a WAV file. Supports `ExportFormat.wav32bit` (IEEE 32-bit float, default) and `ExportFormat.wav16bit` (16-bit integer PCM).
+
+* **Now Playing info (iOS).** `setNowPlayingInfo(NowPlayingInfo)` populates the iOS lock screen and Control Center media strip (title, artist, album, artwork, duration).
+
+* **Effects preset — save and restore.** `applyEffectsPreset(EffectsPreset)` atomically applies a bundle of EQ, reverb, compressor, and cutoff settings. Use `EffectsPreset` to snapshot and restore the full DSP chain in one call.
+
+* **A-B loop points (all platforms, Dart layer).** Bookmark the current playback position as a loop boundary without stopping:
+  * `saveLoopPointA()` / `saveLoopPointB()` — capture the current position as the loop start / end.
+  * `applyLoopPoints()` — call `setLoopRegion` with the saved A-B positions.
+  * `clearLoopPoints()` — reset both points.
+  * `loopPoints` getter — read the current `LoopPoints` state.
+
+* **Count-in before playback (all platforms, Dart layer).** `playAfterCountIn(MetronomePlayer metro, BpmResult bpm, {int bars = 1})` subscribes to the running metronome's `beatStream` and starts playback automatically after the specified number of complete bars.
+
 ## 0.0.9
 
 ### Build system

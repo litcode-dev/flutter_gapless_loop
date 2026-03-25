@@ -5,12 +5,25 @@ A Flutter plugin for true sample-accurate gapless audio looping on iOS, Android,
 ## Features
 
 - Sample-accurate looping with no audible gap or click at the loop boundary
+- **Play-once mode** — `play({bool loop = true})`: pass `loop: false` to play through once, then emit `PlayerState.stopped`
 - Configurable loop region (start and end points in seconds)
+- **A-B loop points** — bookmark playback positions as loop boundaries on the fly
 - Optional crossfade between loop iterations (equal-power)
+- **3-band EQ** — low shelf, peak, high shelf (±12 dB each); iOS, macOS, Android, Windows
+- **Cutoff filter** — low-pass or high-pass biquad with configurable frequency and resonance; iOS, macOS, Android, Windows
+- **Reverb** — 7 built-in room presets with wet/dry mix; iOS, macOS
+- **Compressor** — dynamic range compression with threshold, makeup gain, attack, release; iOS, macOS
+- **Pitch shift** — ±24 semitones, independent of playback rate; iOS, macOS
+- **Volume fades** — native 100 Hz fade ramps (`fadeTo`, `fadeIn`, `fadeOut`); iOS, macOS
+- **Effects preset** — snapshot and restore the full DSP chain atomically
 - Automatic BPM/tempo detection after every load
 - Automatic time signature detection (beats per bar + bar timestamps)
 - Real-time amplitude metering via `amplitudeStream` (RMS + peak, ~20 Hz)
+- **FFT spectrum analyser** — 256 normalised magnitude bins at ~20 Hz; iOS, macOS
 - Load audio from an asset, a file path, raw bytes, or a URL
+- **Export to file** — render the current audio with all DSP applied to WAV; iOS, macOS
+- **Now Playing info** — iOS lock screen / Control Center integration
+- **Count-in** — start playback after N bars of the running metronome
 - Built-in `MetronomePlayer` — sample-accurate click track with accent, runs simultaneously with the loop player
 - Per-instance volume and pan on both `LoopAudioPlayer` and `MetronomePlayer`
 - `LoopAudioMaster` — static group-bus fader for all live `LoopAudioPlayer` instances
@@ -136,10 +149,11 @@ All four methods decode on a background thread. Subscribe to `stateStream` to kn
 ### Playback control
 
 ```dart
-await player.play();    // start looping from the beginning
-await player.pause();   // pause (preserves position)
-await player.resume();  // resume from the paused position
-await player.stop();    // stop and reset position
+await player.play();              // start looping from the beginning (default)
+await player.play(loop: false);   // play once, then emit PlayerState.stopped
+await player.pause();             // pause (preserves position)
+await player.resume();            // resume from the paused position
+await player.stop();              // stop and reset position
 ```
 
 ### Volume
@@ -449,16 +463,37 @@ All methods throw `StateError` if called after `dispose()`.
 | `loadFromFile(String filePath)` | Load from an absolute file system path. |
 | `loadFromBytes(Uint8List bytes, {String extension})` | Load from raw audio bytes. `extension` defaults to `'wav'`. |
 | `loadFromUrl(Uri uri)` | Download from an `http`/`https` URL natively and load. Throws `PlatformException` on non-2xx response or decode failure. |
-| `play()` | Start looping playback. |
+| `play({bool loop = true})` | Start playback. `loop: true` (default) = gapless loop; `loop: false` = play once then stop. |
 | `pause()` | Pause; preserves position. |
 | `resume()` | Resume from paused position. |
 | `stop()` | Stop and reset position. |
+| `playAfterCountIn(MetronomePlayer, BpmResult, {int bars})` | Wait `bars` (default 1) complete bars of the running metronome, then call `play()`. |
+| `fadeTo(double targetVolume, Duration duration)` | Smooth native volume ramp to `targetVolume`. iOS, macOS. |
+| `fadeIn(Duration duration)` | Shorthand for `fadeTo(1.0, duration)`. iOS, macOS. |
+| `fadeOut(Duration duration)` | Shorthand for `fadeTo(0.0, duration)`. iOS, macOS. |
 | `setLoopRegion(double start, double end)` | Loop only the region between `start` and `end` (seconds). |
+| `saveLoopPointA()` | Bookmark current position as loop region start. |
+| `saveLoopPointB()` | Bookmark current position as loop region end. |
+| `applyLoopPoints()` | Call `setLoopRegion` with the saved A-B points. |
+| `clearLoopPoints()` | Clear A and B bookmarks. |
+| `loopPoints` | `LoopPoints` — current A-B state (synchronous getter). |
 | `setCrossfadeDuration(double seconds)` | Crossfade duration at loop boundary. `0.0` = disabled. |
 | `setVolume(double volume)` | Instance volume in `[0.0, 1.0]`. Effective volume = `localVolume × LoopAudioMaster.volume`. Values clamped. |
 | `setPan(double pan)` | Instance pan in `[-1.0, 1.0]`. Effective pan = `clamp(localPan + LoopAudioMaster.pan, -1, 1)`. Values clamped. |
 | `setPlaybackRate(double rate)` | Speed multiplier in `[0.25, 4.0]`, pitch-preserving. |
+| `setPitch(double semitones)` | Pitch shift ±24 semitones, independent of rate. iOS, macOS. |
 | `seek(double seconds)` | Seek to position in seconds. |
+| `setEq(EqSettings settings)` | 3-band biquad EQ. iOS, macOS, Android, Windows. |
+| `resetEq()` | Restore all EQ bands to 0 dB. iOS, macOS, Android, Windows. |
+| `setCutoffFilter(CutoffFilterSettings settings)` | Low-pass or high-pass biquad filter. iOS, macOS, Android, Windows. |
+| `resetCutoffFilter()` | Bypass the cutoff filter. iOS, macOS, Android, Windows. |
+| `setReverb(ReverbPreset preset, {double wetMix})` | Apply room reverb (7 presets). iOS, macOS. |
+| `setCompressor(CompressorSettings settings)` | Dynamic range compression. iOS, macOS. |
+| `applyEffectsPreset(EffectsPreset preset)` | Atomically apply a bundle of EQ + reverb + compressor + cutoff. |
+| `enableSpectrum()` | Start FFT analysis; begin emitting on `spectrumStream`. iOS, macOS. |
+| `disableSpectrum()` | Stop FFT analysis. iOS, macOS. |
+| `exportToFile(String path, {ExportFormat format})` | Render audio with active DSP to a WAV file. iOS, macOS. |
+| `setNowPlayingInfo(NowPlayingInfo info)` | Populate iOS lock screen / Control Center. iOS. |
 | `duration` | `Future<Duration>` — total length of loaded file. |
 | `currentPosition` | `Future<double>` — current playback position in seconds (exact, from native engine). |
 | `lastKnownPosition` | `double` — last position recorded synchronously by `seek()` or `stop()`. Slightly stale but allocation-free; suitable for non-critical UI reads. |
@@ -468,6 +503,7 @@ All methods throw `StateError` if called after `dispose()`.
 | `routeChangeStream` | `Stream<RouteChangeEvent>` — audio route changes. |
 | `bpmStream` | `Stream<BpmResult>` — BPM + time signature analysis result after each load. |
 | `amplitudeStream` | `Stream<AmplitudeEvent>` — RMS and peak amplitude at ~20 Hz while playing. |
+| `spectrumStream` | `Stream<SpectrumData>` — 256-bin FFT magnitudes at ~20 Hz. Requires `enableSpectrum()`. iOS, macOS. |
 | `dispose()` | Release all native resources. Instance unusable after this. |
 
 ### `LoopAudioMaster`
@@ -555,6 +591,181 @@ await MetronomeMaster.reset();        // restore volume=1.0, pan=0.0
 | `headphonesUnplugged` | Audio output device (e.g. headphones) was removed. |
 | `categoryChange` | AVAudioSession category changed (iOS only). |
 | `unknown` | Other route change reason. |
+
+---
+
+## DSP effects
+
+### 3-band EQ
+
+Available on iOS, macOS, Android, and Windows. Three biquad filters are applied in series to every audio chunk: low shelf at 80 Hz, peaking at 1 kHz, and high shelf at 10 kHz. Changes take effect immediately without reloading the file.
+
+```dart
+await player.setEq(EqSettings(
+  lowGainDb:  3.0,   // boost bass +3 dB
+  midGainDb: -2.0,   // cut mid -2 dB
+  highGainDb: 4.0,   // boost highs +4 dB
+));
+
+await player.resetEq(); // restore all bands to 0 dB
+```
+
+### Cutoff filter
+
+Available on iOS, macOS, Android, and Windows. Applied after the EQ in the signal chain.
+
+```dart
+// Low-pass at 8 kHz (roll off the highs)
+await player.setCutoffFilter(CutoffFilterSettings(
+  type:      FilterType.lowPass,
+  cutoffHz:  8000.0,
+  resonance: 0.707,  // Butterworth (no peak)
+));
+
+// High-pass at 200 Hz (remove low rumble)
+await player.setCutoffFilter(CutoffFilterSettings(
+  type:     FilterType.highPass,
+  cutoffHz: 200.0,
+));
+
+await player.resetCutoffFilter(); // bypass
+```
+
+### Reverb (iOS, macOS)
+
+```dart
+await player.setReverb(ReverbPreset.mediumHall, wetMix: 0.4);
+```
+
+Available presets: `smallRoom`, `mediumRoom`, `largeRoom`, `mediumHall`, `largeHall`, `plate`, `cathedral`. `wetMix` ranges from `0.0` (dry) to `1.0` (fully wet), default `0.3`.
+
+### Compressor (iOS, macOS)
+
+```dart
+await player.setCompressor(CompressorSettings(
+  threshold:  -18.0,  // start compressing at −18 dB
+  makeupGain:  4.0,   // add 4 dB of make-up gain
+  attackMs:    5.0,
+  releaseMs:   80.0,
+));
+```
+
+### Pitch shift (iOS, macOS)
+
+Shifts pitch by semitones without affecting speed. Independent of `setPlaybackRate`.
+
+```dart
+await player.setPitch(-2.0);  // down 2 semitones
+await player.setPitch(0.0);   // natural pitch (default)
+await player.setPitch(7.0);   // up a perfect fifth
+```
+
+### Volume fades (iOS, macOS)
+
+```dart
+await player.fadeIn(const Duration(seconds: 2));          // fade in over 2 s
+await player.fadeOut(const Duration(milliseconds: 500));  // fade out over 500 ms
+await player.fadeTo(0.6, const Duration(seconds: 1));     // ramp to 60 % over 1 s
+```
+
+Fades are processed natively at 100 Hz for smooth, click-free transitions.
+
+### Effects preset
+
+Atomically apply a bundle of EQ + reverb + compressor + cutoff in one call. Useful for saving and restoring a full DSP configuration.
+
+```dart
+const myPreset = EffectsPreset(
+  eq:           EqSettings(lowGainDb: 2, midGainDb: 0, highGainDb: 3),
+  reverb:       ReverbPreset.smallRoom,
+  reverbWetMix: 0.2,
+  compressor:   CompressorSettings(threshold: -20, makeupGain: 3),
+  cutoff:       CutoffFilterSettings(type: FilterType.lowPass, cutoffHz: 12000),
+);
+
+await player.applyEffectsPreset(myPreset);
+```
+
+---
+
+## A-B loop points
+
+Bookmark the current playback position as a loop region boundary without stopping. Useful for real-time loop trimming.
+
+```dart
+// While the track is playing…
+await player.saveLoopPointA(); // mark loop start at current position
+// …later…
+await player.saveLoopPointB(); // mark loop end at current position
+
+await player.applyLoopPoints(); // equivalent to setLoopRegion(a, b)
+
+// Check the saved positions
+final pts = player.loopPoints;
+print('A: ${pts.pointA}, B: ${pts.pointB}, complete: ${pts.isComplete}');
+
+await player.clearLoopPoints(); // reset
+```
+
+---
+
+## Count-in
+
+Start playback automatically after a specified number of bars of a running `MetronomePlayer`:
+
+```dart
+// Start the metro first
+await metronome.start(bpm: 120, beatsPerBar: 4, click: clickBytes, accent: accentBytes);
+
+// Waits 1 bar (default), then calls play()
+await player.playAfterCountIn(metronome, bpmResult);
+
+// Wait 2 bars before starting
+await player.playAfterCountIn(metronome, bpmResult, bars: 2);
+```
+
+---
+
+## Spectrum analyser (iOS, macOS)
+
+```dart
+await player.enableSpectrum();
+
+player.spectrumStream.listen((SpectrumData data) {
+  // data.magnitudes: Float32List of 256 normalised [0, 1] bins, low → high frequency
+  final peak = data.magnitudes.reduce(math.max);
+  print('Peak bin: $peak');
+});
+
+await player.disableSpectrum();
+```
+
+---
+
+## Export to file (iOS, macOS)
+
+Render the loaded audio with all active DSP (EQ, reverb, compressor, cutoff) to a WAV file on disk:
+
+```dart
+await player.exportToFile(
+  '/path/to/output.wav',
+  format: ExportFormat.wav16bit,  // or ExportFormat.wav32bit (default)
+);
+```
+
+---
+
+## Now Playing info (iOS)
+
+Populate the iOS lock screen and Control Center media strip:
+
+```dart
+await player.setNowPlayingInfo(NowPlayingInfo(
+  title:    'My Loop',
+  artist:   'Artist Name',
+  duration: await player.duration,
+));
+```
 
 ---
 
