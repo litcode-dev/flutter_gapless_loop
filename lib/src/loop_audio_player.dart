@@ -260,10 +260,14 @@ class LoopAudioPlayer {
 
   // ── Playback controls ─────────────────────────────────────────────────────
 
-  /// Starts looping playback from the beginning (or current loop region start).
-  Future<void> play() async {
+  /// Starts playback.
+  ///
+  /// Pass [loop] = false to play through exactly once; [stateStream] emits
+  /// [PlayerState.stopped] when the audio reaches the end naturally.
+  /// Defaults to [loop] = true (gapless looping) for backwards compatibility.
+  Future<void> play({bool loop = true}) async {
     _checkNotDisposed();
-    await _channel.invokeMethod<void>('play', {'playerId': _playerId});
+    await _channel.invokeMethod<void>('play', {'playerId': _playerId, 'loop': loop});
   }
 
   /// Pauses playback. Call [resume] to continue from the same position.
