@@ -327,7 +327,8 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             }
 
         case "play":
-            eng.play()
+            let loop = (args["loop"] as? Bool) ?? true
+            eng.play(loop: loop)
             DispatchQueue.main.async { result(nil) }
 
         case "pause":
