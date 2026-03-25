@@ -570,6 +570,18 @@ public class FlutterGaplessLoopPlugin: NSObject, FlutterPlugin, FlutterStreamHan
             eng.resetEq()
             DispatchQueue.main.async { result(nil) }
 
+        // MARK: - Tier 3: Cutoff Filter
+        case "setCutoffFilter":
+            let cutoffHz  = (args?["cutoffHz"]  as? Double).map(Float.init) ?? 20000
+            let type      = args?["type"]        as? Int    ?? 0
+            let resonance = (args?["resonance"]  as? Double).map(Float.init) ?? 0.707
+            eng.setCutoffFilter(cutoffHz: cutoffHz, type: type, resonance: resonance)
+            DispatchQueue.main.async { result(nil) }
+
+        case "resetCutoffFilter":
+            eng.resetCutoffFilter()
+            DispatchQueue.main.async { result(nil) }
+
         // MARK: - Tier 3: Reverb
         case "setReverb":
             guard let presetIndex = args?["preset"] as? Int,

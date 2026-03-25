@@ -290,6 +290,34 @@ class FlutterGaplessLoopPlugin : FlutterPlugin, MethodCallHandler, EventChannel.
             "getDuration"         -> result.success(eng.duration)
             "getCurrentPosition"  -> result.success(eng.currentTime)
 
+            // ── Tier 3: EQ ────────────────────────────────────────────────────
+            "setEq" -> {
+                val low  = call.argument<Double>("low")?.toFloat()  ?: 0f
+                val mid  = call.argument<Double>("mid")?.toFloat()  ?: 0f
+                val high = call.argument<Double>("high")?.toFloat() ?: 0f
+                eng.setEq(low, mid, high)
+                result.success(null)
+            }
+
+            "resetEq" -> {
+                eng.resetEq()
+                result.success(null)
+            }
+
+            // ── Tier 3: Cutoff Filter ─────────────────────────────────────────
+            "setCutoffFilter" -> {
+                val cutoffHz  = call.argument<Double>("cutoffHz")?.toFloat()  ?: 20000f
+                val type      = call.argument<Int>("type")                     ?: 0
+                val resonance = call.argument<Double>("resonance")?.toFloat() ?: 0.707f
+                eng.setCutoffFilter(cutoffHz, type, resonance)
+                result.success(null)
+            }
+
+            "resetCutoffFilter" -> {
+                eng.resetCutoffFilter()
+                result.success(null)
+            }
+
             "dispose" -> {
                 eng.dispose()
                 engines.remove(playerId)

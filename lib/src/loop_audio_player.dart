@@ -68,6 +68,7 @@ class LoopAudioPlayer {
   ReverbPreset _currentReverbPreset = ReverbPreset.smallRoom;
   double _currentReverbWetMix = 0.0;
   CompressorSettings _currentCompressor = const CompressorSettings();
+  CutoffFilterSettings? _currentCutoff;
 
   // ── Hot-restart guard ──────────────────────────────────────────────────────
   // Dart statics are reset on hot restart; the native engine map is not.
@@ -583,6 +584,29 @@ class LoopAudioPlayer {
     await _channel.invokeMethod<void>('resetEq', {'playerId': _playerId});
   }
 
+  // ── Tier 3: Cutoff filter ─────────────────────────────────────────────────
+
+  /// Applies a low-pass or high-pass cutoff filter.
+  ///
+  /// [settings.cutoffHz] sets the corner frequency (20–20000 Hz).
+  /// [settings.resonance] sets the Q factor (0.1–10.0; 0.707 = no resonance peak).
+  /// [settings.type] selects [FilterType.lowPass] or [FilterType.highPass].
+  Future<void> setCutoffFilter(CutoffFilterSettings settings) async {
+    _checkNotDisposed();
+    _currentCutoff = settings;
+    await _channel.invokeMethod<void>('setCutoffFilter', {
+      'playerId': _playerId,
+      ...settings.toMap(),
+    });
+  }
+
+  /// Disables the cutoff filter (bypasses it).
+  Future<void> resetCutoffFilter() async {
+    _checkNotDisposed();
+    _currentCutoff = null;
+    await _channel.invokeMethod<void>('resetCutoffFilter', {'playerId': _playerId});
+  }
+
   // ── Tier 3: Reverb ────────────────────────────────────────────────────────
 
   /// Applies reverb with the given [preset] and wet/dry [wetMix] (0.0–1.0).
@@ -703,6 +727,7 @@ class LoopAudioPlayer {
       reverb:       _currentReverbPreset,
       reverbWetMix: _currentReverbWetMix,
       compressor:   _currentCompressor,
+      cutoff:       _currentCutoff,
     );
   }
 
@@ -713,9 +738,16 @@ class LoopAudioPlayer {
     _currentReverbPreset   = preset.reverb;
     _currentReverbWetMix   = preset.reverbWetMix;
     _currentCompressor     = preset.compressor;
+    _currentCutoff         = preset.cutoff;
     await setEq(preset.eq);
     await setReverb(preset.reverb, wetMix: preset.reverbWetMix);
     await setCompressor(preset.compressor);
+    final cutoff = preset.cutoff;
+    if (cutoff != null) {
+      await setCutoffFilter(cutoff);
+    } else {
+      await resetCutoffFilter();
+    }
   }
 
   // ── Dispose ───────────────────────────────────────────────────────────────

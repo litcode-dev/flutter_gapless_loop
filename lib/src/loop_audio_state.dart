@@ -224,6 +224,44 @@ class EqSettings {
   };
 }
 
+/// Filter type for the cutoff filter.
+enum FilterType {
+  /// Low-pass filter: passes frequencies below [CutoffFilterSettings.cutoffHz].
+  lowPass,
+
+  /// High-pass filter: passes frequencies above [CutoffFilterSettings.cutoffHz].
+  highPass,
+}
+
+/// Settings for a single-pole cutoff (low-pass or high-pass) filter.
+///
+/// Applied after the 3-band EQ in the signal chain.
+class CutoffFilterSettings {
+  /// Whether to use a low-pass or high-pass filter.
+  final FilterType type;
+
+  /// Cutoff frequency in Hz. Range: 20–20000 Hz.
+  ///
+  /// Defaults to 20000 Hz for [FilterType.lowPass] (effectively transparent)
+  /// and 20 Hz for [FilterType.highPass].
+  final double cutoffHz;
+
+  /// Resonance (Q factor). Range: 0.1–10.0. Default 0.707 (Butterworth, no resonance peak).
+  final double resonance;
+
+  const CutoffFilterSettings({
+    this.type      = FilterType.lowPass,
+    this.cutoffHz  = 20000.0,
+    this.resonance = 0.707,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'type':      type.index,
+    'cutoffHz':  cutoffHz.clamp(20.0, 20000.0),
+    'resonance': resonance.clamp(0.1, 10.0),
+  };
+}
+
 /// Built-in reverb room presets.
 enum ReverbPreset {
   smallRoom,
@@ -295,12 +333,14 @@ class EffectsPreset {
   final ReverbPreset reverb;
   final double reverbWetMix;
   final CompressorSettings compressor;
+  final CutoffFilterSettings? cutoff;
 
   const EffectsPreset({
     required this.eq,
     required this.reverb,
     required this.reverbWetMix,
     required this.compressor,
+    this.cutoff,
   });
 }
 

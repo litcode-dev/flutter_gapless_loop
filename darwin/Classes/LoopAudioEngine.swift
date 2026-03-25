@@ -108,7 +108,7 @@ public class LoopAudioEngine {
     private let nodeB = AVAudioPlayerNode()   // only connected when crossfadeDuration > 0
     private let mixerNode = AVAudioMixerNode()
     private let timePitchNode = AVAudioUnitTimePitch()
-    private let eqNode = AVAudioUnitEQ(numberOfBands: 3)
+    private let eqNode = AVAudioUnitEQ(numberOfBands: 4)  // bands 0-2: EQ, band 3: cutoff filter
     private let reverbNode = AVAudioUnitReverb()
     private var compressorNode: AVAudioUnitEffect?
 
@@ -709,7 +709,39 @@ public class LoopAudioEngine {
     public func resetEq() {
         audioQueue.async { [weak self] in
             guard let self else { return }
-            self.eqNode.bands.forEach { $0.gain = 0; $0.bypass = true }
+            // Only reset bands 0-2 (EQ bands); leave band 3 (cutoff) untouched
+            for i in 0..<3 { self.eqNode.bands[i].gain = 0; self.eqNode.bands[i].bypass = true }
+        }
+    }
+
+    // MARK: - Public API: Cutoff Filter
+
+    /// Applies a low-pass or high-pass cutoff filter using EQ band 3.
+    ///
+    /// - Parameters:
+    ///   - cutoffHz:  Corner frequency in Hz (20–20000).
+    ///   - type:      0 = low-pass, 1 = high-pass.
+    ///   - resonance: Q factor (0.1–10.0). Maps to bandwidth: bandwidth = 1/(Q * ln(2)).
+    public func setCutoffFilter(cutoffHz: Float, type: Int, resonance: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let band = self.eqNode.bands[3]
+            band.filterType = (type == 1) ? .highPass : .lowPass
+            band.frequency  = cutoffHz.clamped(to: 20...20000)
+            // AVAudioUnitEQ bandwidth is in octaves. Convert Q to octaves:
+            // bandwidth_octaves = 2 / ln(2) * asinh(1 / (2*Q))  ≈ 1/Q for Q > 0.5
+            // Simpler: use 0.5 as a starting point and clamp to valid range [0.05, 5.0]
+            let q = resonance.clamped(to: 0.1...10.0)
+            band.bandwidth  = (1.0 / q).clamped(to: 0.05...5.0)
+            band.bypass     = false
+        }
+    }
+
+    /// Disables the cutoff filter (bypasses band 3).
+    public func resetCutoffFilter() {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.eqNode.bands[3].bypass = true
         }
     }
 
@@ -849,7 +881,7 @@ public class LoopAudioEngine {
     /// Builds the audio graph: nodeA → mixerNode → eqNode → reverbNode → compressorNode → timePitchNode → mainMixerNode → outputNode.
     /// nodeB is only attached when crossfade is enabled (lazy).
     private func setupEngineGraph(format: AVAudioFormat) {
-        // Configure EQ bands: low-shelf 80Hz, peak 1kHz, high-shelf 10kHz
+        // Configure EQ bands: low-shelf 80Hz, peak 1kHz, high-shelf 10kHz, cutoff (bypassed)
         eqNode.bands[0].filterType  = .lowShelf
         eqNode.bands[0].frequency   = 80
         eqNode.bands[0].bypass      = true
@@ -860,6 +892,11 @@ public class LoopAudioEngine {
         eqNode.bands[2].filterType  = .highShelf
         eqNode.bands[2].frequency   = 10000
         eqNode.bands[2].bypass      = true
+        // Band 3: cutoff filter (low-pass by default, bypassed until setCutoffFilter is called)
+        eqNode.bands[3].filterType  = .lowPass
+        eqNode.bands[3].frequency   = 20000
+        eqNode.bands[3].bandwidth   = 0.5   // Q ≈ 1/bandwidth; 0.5 octaves → Q ≈ 0.707
+        eqNode.bands[3].bypass      = true
 
         reverbNode.bypass = true
 

@@ -441,6 +441,34 @@ void FlutterGaplessLoopPlugin::HandleLoopCall(
     } else if (call.method_name() == "getCurrentPosition") {
         result->Success(EncodableValue(eng->GetCurrentPosition()));
 
+    } else if (call.method_name() == "setEq") {
+        auto low  = ArgDouble(args, "low");
+        auto mid  = ArgDouble(args, "mid");
+        auto high = ArgDouble(args, "high");
+        eng->SetEq(
+            static_cast<float>(low.value_or(0.0)),
+            static_cast<float>(mid.value_or(0.0)),
+            static_cast<float>(high.value_or(0.0)));
+        result->Success();
+
+    } else if (call.method_name() == "resetEq") {
+        eng->ResetEq();
+        result->Success();
+
+    } else if (call.method_name() == "setCutoffFilter") {
+        auto cutoffHz  = ArgDouble(args, "cutoffHz");
+        auto type      = ArgInt   (args, "type");
+        auto resonance = ArgDouble(args, "resonance");
+        eng->SetCutoffFilter(
+            static_cast<float>(cutoffHz.value_or(20000.0)),
+            static_cast<int>  (type.value_or(0)),
+            static_cast<float>(resonance.value_or(0.707)));
+        result->Success();
+
+    } else if (call.method_name() == "resetCutoffFilter") {
+        eng->ResetCutoffFilter();
+        result->Success();
+
     } else if (call.method_name() == "dispose") {
         eng->Dispose();
         engines_.erase(*pid);

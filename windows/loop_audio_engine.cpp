@@ -106,17 +106,29 @@ bool LoopAudioEngine::LoadFile(const std::wstring& path) {
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        fullPcm_       = std::move(decoded.pcm);
+        // Save raw (micro-faded, pre-EQ) PCM for re-processing when EQ changes.
+        rawFullPcm_    = decoded.pcm;
         sampleRate_    = decoded.sampleRate;
         channelCount_  = decoded.channelCount;
         fileDuration_  = static_cast<double>(decoded.totalFrames) / sampleRate_;
         loopStart_     = 0.0;
         loopEnd_       = fileDuration_;
+        rawLoopPcm_.clear();
         loopPcm_.clear();
         mainLoopPcm_.clear();
         xfadeHeadPcm_.clear();
         xfadeFrames_   = 0;
         mode_          = (crossfadeDuration_ > 0) ? PlaybackMode::C : PlaybackMode::A;
+
+        // Apply EQ + cutoff to produce fullPcm_ from rawFullPcm_.
+        fullPcm_ = rawFullPcm_;
+        BiquadFilterBank bank(channelCount_);
+        bank.SetLowShelf(eqLowGainDb_, sampleRate_);
+        bank.SetPeaking(eqMidGainDb_, sampleRate_);
+        bank.SetHighShelf(eqHighGainDb_, sampleRate_);
+        if (cutoffHz_ > 0.f)
+            bank.SetCutoff(cutoffHz_, cutoffType_, cutoffQ_, sampleRate_);
+        bank.Process(fullPcm_.data(), static_cast<int>(fullPcm_.size()));
     }
 
     if (crossfadeDuration_ > 0)
@@ -153,17 +165,27 @@ bool LoopAudioEngine::LoadUrl(const std::wstring& url) {
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        fullPcm_      = std::move(decoded.pcm);
+        rawFullPcm_   = decoded.pcm;
         sampleRate_   = decoded.sampleRate;
         channelCount_ = decoded.channelCount;
         fileDuration_ = static_cast<double>(decoded.totalFrames) / sampleRate_;
         loopStart_    = 0.0;
         loopEnd_      = fileDuration_;
+        rawLoopPcm_.clear();
         loopPcm_.clear();
         mainLoopPcm_.clear();
         xfadeHeadPcm_.clear();
         xfadeFrames_  = 0;
         mode_         = (crossfadeDuration_ > 0) ? PlaybackMode::C : PlaybackMode::A;
+
+        fullPcm_ = rawFullPcm_;
+        BiquadFilterBank bank(channelCount_);
+        bank.SetLowShelf(eqLowGainDb_, sampleRate_);
+        bank.SetPeaking(eqMidGainDb_, sampleRate_);
+        bank.SetHighShelf(eqHighGainDb_, sampleRate_);
+        if (cutoffHz_ > 0.f)
+            bank.SetCutoff(cutoffHz_, cutoffType_, cutoffQ_, sampleRate_);
+        bank.Process(fullPcm_.data(), static_cast<int>(fullPcm_.size()));
     }
 
     if (crossfadeDuration_ > 0)
@@ -226,7 +248,7 @@ void LoopAudioEngine::Stop() {
 
 bool LoopAudioEngine::SetLoopRegion(double startSecs, double endSecs) {
     std::lock_guard<std::mutex> lock(stateMutex_);
-    if (fullPcm_.empty()) return false;
+    if (rawFullPcm_.empty()) return false;
     if (startSecs < 0 || endSecs <= startSecs || endSecs > fileDuration_) return false;
 
     const int startFrame = static_cast<int>(startSecs * sampleRate_);
@@ -234,13 +256,26 @@ bool LoopAudioEngine::SetLoopRegion(double startSecs, double endSecs) {
     const int frames     = endFrame - startFrame;
     if (frames <= 0) return false;
 
-    loopPcm_.assign(static_cast<size_t>(frames * channelCount_), 0.f);
+    // Extract loop region from raw (pre-EQ) PCM and save for future EQ re-processing.
+    rawLoopPcm_.assign(static_cast<size_t>(frames * channelCount_), 0.f);
     for (int i = 0; i < frames; ++i)
         for (uint32_t ch = 0; ch < channelCount_; ++ch)
-            loopPcm_[i * channelCount_ + ch] =
-                fullPcm_[(startFrame + i) * channelCount_ + ch];
+            rawLoopPcm_[i * channelCount_ + ch] =
+                rawFullPcm_[(startFrame + i) * channelCount_ + ch];
 
-    AudioDecoder::ApplyMicroFade(loopPcm_, sampleRate_, channelCount_);
+    AudioDecoder::ApplyMicroFade(rawLoopPcm_, sampleRate_, channelCount_);
+
+    // Apply EQ + cutoff to produce loopPcm_.
+    loopPcm_ = rawLoopPcm_;
+    {
+        BiquadFilterBank bank(channelCount_);
+        bank.SetLowShelf(eqLowGainDb_, sampleRate_);
+        bank.SetPeaking(eqMidGainDb_, sampleRate_);
+        bank.SetHighShelf(eqHighGainDb_, sampleRate_);
+        if (cutoffHz_ > 0.f)
+            bank.SetCutoff(cutoffHz_, cutoffType_, cutoffQ_, sampleRate_);
+        bank.Process(loopPcm_.data(), static_cast<int>(loopPcm_.size()));
+    }
 
     loopStart_ = startSecs;
     loopEnd_   = endSecs;
@@ -600,12 +635,12 @@ void LoopAudioEngine::StopMonitorThreads() {
 void LoopAudioEngine::StartBpmThread() {
     StopBpmThread();
     bpmRunning_ = true;
-    // Capture a copy of the full PCM so we can safely read it off-mutex.
+    // Capture a copy of the raw (pre-EQ) PCM so BPM detection works on the original signal.
     std::vector<float> pcmCopy;
     uint32_t sr = 0, ch = 0;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        pcmCopy = fullPcm_;
+        pcmCopy = rawFullPcm_;
         sr      = sampleRate_;
         ch      = channelCount_;
     }
@@ -698,4 +733,86 @@ int LoopAudioEngine::ActiveFrames() const {
 
 double LoopAudioEngine::ActiveStart() const {
     return loopPcm_.empty() ? 0.0 : loopStart_;
+}
+
+// ─── Tier 3: EQ + Cutoff Filter ───────────────────────────────────────────────
+
+void LoopAudioEngine::SetEq(float lowGainDb, float midGainDb, float highGainDb) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    eqLowGainDb_  = lowGainDb;
+    eqMidGainDb_  = midGainDb;
+    eqHighGainDb_ = highGainDb;
+    ApplyEqToBuffers(/*resubmit=*/true);
+}
+
+void LoopAudioEngine::ResetEq() {
+    SetEq(0.f, 0.f, 0.f);
+}
+
+void LoopAudioEngine::SetCutoffFilter(float cutoffHz, int type, float resonance) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    cutoffHz_   = cutoffHz;
+    cutoffType_ = type;
+    cutoffQ_    = resonance;
+    ApplyEqToBuffers(/*resubmit=*/true);
+}
+
+void LoopAudioEngine::ResetCutoffFilter() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    cutoffHz_ = 0.f;
+    ApplyEqToBuffers(/*resubmit=*/true);
+}
+
+/// Applies current EQ + cutoff settings to rawFullPcm_ (and rawLoopPcm_),
+/// updating fullPcm_ and loopPcm_. Rebuilds xfade buffers if needed.
+/// If [resubmit] is true and the engine is playing, stops and resubmits.
+///
+/// Must be called with stateMutex_ held.
+void LoopAudioEngine::ApplyEqToBuffers(bool resubmit) {
+    if (rawFullPcm_.empty()) return;  // not loaded yet
+
+    // Build filter bank from current settings.
+    BiquadFilterBank bank(static_cast<int>(channelCount_));
+    bank.SetLowShelf(eqLowGainDb_, static_cast<int>(sampleRate_));
+    bank.SetPeaking (eqMidGainDb_, static_cast<int>(sampleRate_));
+    bank.SetHighShelf(eqHighGainDb_, static_cast<int>(sampleRate_));
+    if (cutoffHz_ > 0.f)
+        bank.SetCutoff(cutoffHz_, cutoffType_, cutoffQ_, static_cast<int>(sampleRate_));
+
+    // Apply to fullPcm_.
+    fullPcm_ = rawFullPcm_;
+    bank.Process(fullPcm_.data(), static_cast<int>(fullPcm_.size()));
+
+    // Apply to loopPcm_ if a loop region is active.
+    if (!rawLoopPcm_.empty()) {
+        loopPcm_ = rawLoopPcm_;
+        bank.ResetState();
+        bank.Process(loopPcm_.data(), static_cast<int>(loopPcm_.size()));
+    }
+
+    // Rebuild crossfade buffers (they reference fullPcm_/loopPcm_).
+    if (crossfadeDuration_ > 0.0 && !fullPcm_.empty()) {
+        mainLoopPcm_.clear();
+        xfadeHeadPcm_.clear();
+        // RebuildXfadeBuffers() reads ActivePcm() which is now updated.
+        // It does NOT take the mutex, so calling inside the lock is safe.
+        RebuildXfadeBuffers();
+    }
+
+    if (!resubmit || !voiceA_) return;
+
+    const bool wasPlaying = (state_ == EngineState::playing);
+    if (wasPlaying) {
+        StopMonitorThreads();
+        voiceA_->Stop();
+        voiceA_->FlushSourceBuffers();
+        if (voiceB_) { voiceB_->Stop(); voiceB_->FlushSourceBuffers(); }
+        xfadeHeadPending_ = false;
+
+        SubmitLoopBuffer();
+        voiceA_->Start();
+        if (voiceB_ && (mode_ == PlaybackMode::C || mode_ == PlaybackMode::D))
+            voiceB_->Start();
+        StartMonitorThreads();
+    }
 }

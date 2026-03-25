@@ -10,6 +10,7 @@
 #include <thread>
 #include <atomic>
 #include "bpm_detector.h"
+#include "biquad_filter.h"
 
 // ─── EngineState ──────────────────────────────────────────────────────────────
 
@@ -86,6 +87,12 @@ public:
     double GetCurrentPosition() const;
     void   Dispose();
 
+    // ── Tier 3: EQ + Cutoff Filter ────────────────────────────────────────────
+    void   SetEq(float lowGainDb, float midGainDb, float highGainDb);
+    void   ResetEq();
+    void   SetCutoffFilter(float cutoffHz, int type, float resonance);
+    void   ResetCutoffFilter();
+
     // Called from DeviceNotifier (COM thread) when the default audio device changes.
     void   OnDeviceChanged();
 
@@ -114,6 +121,20 @@ private:
     float  volume_            = 1.0f;
     float  pan_               = 0.0f;
     float  playbackRate_      = 1.0f;
+
+    // ── EQ / Cutoff state ─────────────────────────────────────────────────────
+    // Pending settings applied via ApplyEqToBuffers() whenever the PCM changes.
+    float eqLowGainDb_   = 0.f;
+    float eqMidGainDb_   = 0.f;
+    float eqHighGainDb_  = 0.f;
+    float cutoffHz_      = 0.f;  // 0 = bypass
+    int   cutoffType_    = 0;    // 0 = low-pass, 1 = high-pass
+    float cutoffQ_       = 0.707f;
+
+    // Raw PCM buffers (decoded, micro-faded, NOT EQ'd).
+    // EQ is applied to these to produce fullPcm_/loopPcm_ for submission to XAudio2.
+    std::vector<float> rawFullPcm_;
+    std::vector<float> rawLoopPcm_;
 
     // ── State ─────────────────────────────────────────────────────────────────
     EngineState      state_ = EngineState::idle;
@@ -156,6 +177,9 @@ private:
     void  StopBpmThread();
     void  InitDeviceNotifier();
     void  TeardownDeviceNotifier();
+    /// Applies current EQ + cutoff to rawFullPcm_ (and rawLoopPcm_ if set),
+    /// updates fullPcm_ / loopPcm_, then resubmits to XAudio2 if playing.
+    void  ApplyEqToBuffers(bool resubmit);
 
     /// Returns loopPcm_ if non-empty, otherwise fullPcm_.
     const std::vector<float>& ActivePcm() const;
