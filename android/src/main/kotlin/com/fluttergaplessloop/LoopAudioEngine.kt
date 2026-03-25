@@ -199,6 +199,27 @@ class LoopAudioEngine(private val context: Context) {
     private var writeThread: Thread? = null
     private var audioTrack: AudioTrack? = null
 
+    // ─── Private: DSP filter bank ─────────────────────────────────────────────
+
+    /**
+     * Biquad filter bank (EQ + cutoff). Re-created when [channelCount] changes (on each load).
+     * Updated from the main thread; read exclusively from the write thread.
+     *
+     * Volatile reference ensures the write thread always sees the most recent bank.
+     * Coefficients inside are written before publication (safe-publication via @Volatile).
+     */
+    @Volatile private var filterBank: BiquadFilterBank? = null
+
+    /** Pending EQ settings applied on the next load or immediately if already loaded. */
+    @Volatile private var pendingLowGainDb:  Float = 0f
+    @Volatile private var pendingMidGainDb:  Float = 0f
+    @Volatile private var pendingHighGainDb: Float = 0f
+
+    /** Pending cutoff settings. cutoffHz ≤ 0 means cutoff is bypassed. */
+    @Volatile private var pendingCutoffHz:   Float = 0f
+    @Volatile private var pendingCutoffType: Int   = 0
+    @Volatile private var pendingCutoffQ:    Float = 0.707f
+
     // ─── Private: session / coroutines ───────────────────────────────────────
 
     private val sessionManager = AudioSessionManager(context)
@@ -455,6 +476,69 @@ class LoopAudioEngine(private val context: Context) {
     }
 
     /**
+     * Applies a 3-band EQ (low shelf 80 Hz, peak 1 kHz, high shelf 10 kHz).
+     *
+     * Changes take effect on the next write-thread chunk. The filter bank is re-applied
+     * immediately if a file is already loaded.
+     *
+     * @param lowGainDb  Low-shelf gain in dB (±12).
+     * @param midGainDb  Peak gain at 1 kHz in dB (±12).
+     * @param highGainDb High-shelf gain in dB (±12).
+     */
+    fun setEq(lowGainDb: Float, midGainDb: Float, highGainDb: Float) {
+        pendingLowGainDb  = lowGainDb
+        pendingMidGainDb  = midGainDb
+        pendingHighGainDb = highGainDb
+        rebuildFilterBank()
+    }
+
+    /** Resets the EQ to 0 dB (all bands bypassed). The cutoff filter is unaffected. */
+    fun resetEq() = setEq(0f, 0f, 0f)
+
+    /**
+     * Applies a low-pass or high-pass cutoff filter.
+     *
+     * @param cutoffHz  Corner frequency in Hz (20–20000).
+     * @param type      0 = low-pass, 1 = high-pass.
+     * @param resonance Q factor (0.1–10.0; 0.707 = Butterworth).
+     */
+    fun setCutoffFilter(cutoffHz: Float, type: Int, resonance: Float) {
+        pendingCutoffHz   = cutoffHz.coerceIn(20f, 20000f)
+        pendingCutoffType = type
+        pendingCutoffQ    = resonance.coerceIn(0.1f, 10.0f)
+        rebuildFilterBank()
+    }
+
+    /** Disables the cutoff filter. The EQ bands are unaffected. */
+    fun resetCutoffFilter() {
+        pendingCutoffHz = 0f
+        rebuildFilterBank()
+    }
+
+    /**
+     * Reconstructs the [filterBank] from current pending settings.
+     *
+     * Must be called from the main thread. The new bank is published atomically via
+     * @Volatile so the write thread picks it up on its next iteration.
+     */
+    private fun rebuildFilterBank() {
+        val sr  = sampleRate
+        val ch  = channelCount
+        if (sr <= 0 || ch <= 0) return  // not loaded yet; will be rebuilt on load
+
+        val bank = BiquadFilterBank(ch)
+        bank.setLowShelf(pendingLowGainDb, sr)
+        bank.setPeaking(pendingMidGainDb, sr)
+        bank.setHighShelf(pendingHighGainDb, sr)
+        if (pendingCutoffHz > 0f) {
+            bank.setCutoff(pendingCutoffHz, pendingCutoffType, pendingCutoffQ, sr)
+        } else {
+            bank.bypassCutoff()
+        }
+        filterBank = bank
+    }
+
+    /**
      * Seeks to [seconds] in the file.
      *
      * Updates [currentFrameAtomic] atomically. The write thread reads this at the
@@ -468,6 +552,7 @@ class LoopAudioEngine(private val context: Context) {
         val targetFrame = (seconds * sampleRate).toLong()
             .coerceIn(loopStartFrame.toLong(), loopEndFrame.toLong())
         currentFrameAtomic.set(targetFrame)
+        filterBank?.resetState()  // clear IIR state to prevent pops on seek
         Log.i(TAG, "seek: ${seconds}s → frame $targetFrame")
     }
 
@@ -512,6 +597,7 @@ class LoopAudioEngine(private val context: Context) {
         crossfadeDuration  = 0.0
 
         buildAudioTrack()
+        rebuildFilterBank()  // apply any pending EQ/cutoff settings to the new sample rate
     }
 
     /**
@@ -636,6 +722,9 @@ class LoopAudioEngine(private val context: Context) {
                     }
 
                     currentFrameAtomic.set(currentFrame.toLong())
+
+                    // ── Apply EQ / cutoff filter ───────────────────────────────
+                    filterBank?.process(writeBuffer, writeIdx)
 
                     // ── Write to AudioTrack ────────────────────────────────────
                     // WRITE_BLOCKING: blocks until AudioTrack consumes all data.
