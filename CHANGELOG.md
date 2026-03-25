@@ -1,5 +1,9 @@
 ## 0.0.10
 
+### Bug fixes
+
+* **Android: multi-engine `AudioManager` focus conflict.** When two or more `LoopAudioPlayer` instances ran concurrently, each instance held its own `AudioFocusRequest` and called `requestAudioFocus` / `abandonAudioFocus` independently. Because `AudioManager.requestAudioFocus(AUDIOFOCUS_GAIN)` displaces the current holder, each new engine would silently steal focus from the others — causing previously-playing engines to receive `AUDIOFOCUS_LOSS` and stop. Fixed by replacing the per-instance focus machinery in `AudioSessionManager` with a process-wide reference-counted companion object. The system `requestAudioFocus` is called exactly once (on the 0→1 active-engine transition) and `abandonAudioFocus` exactly once (on the 1→0 transition). All active engines share a single `AudioFocusRequest` and receive focus-change callbacks through a shared listener. This mirrors the `static sessionConfigured` guard added for iOS/macOS in 0.0.6.
+
 ### New features
 
 * **Play-once mode.** `play()` now accepts an optional named parameter: `play({bool loop = true})`. Pass `loop: false` to play through the file (or loop region) exactly once; `stateStream` emits `PlayerState.stopped` when the end is reached. The default is `true`, so all existing callers continue to loop without any changes. Implemented natively on iOS, macOS, Android, and Windows.
