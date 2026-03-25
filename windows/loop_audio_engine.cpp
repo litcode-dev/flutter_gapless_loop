@@ -68,6 +68,15 @@ struct XfadeVoiceCallback : public IXAudio2VoiceCallback {
 };
 } // namespace
 
+// ─── PlaybackVoiceCallback ────────────────────────────────────────────────────
+
+// Fires PostPlaybackComplete() when a one-shot buffer finishes on voiceA_.
+void LoopAudioEngine::PlaybackVoiceCallback::OnBufferEnd(void* /*pBufferContext*/) {
+    // Called on an XAudio2 internal thread. Must not block or join threads.
+    if (engine && !engine->loop_) {
+        engine->PostPlaybackComplete();
+    }
+}
 
 // ─── Constructor / Destructor ────────────────────────────────────────────────
 
@@ -202,10 +211,15 @@ bool LoopAudioEngine::LoadUrl(const std::wstring& url) {
     return true;
 }
 
-void LoopAudioEngine::Play() {
+void LoopAudioEngine::Play(bool loop) {
+    // Join any monitor threads lingering from a previous one-shot completion
+    // before attempting to start new ones.
+    StopMonitorThreads();
+
     std::lock_guard<std::mutex> lock(stateMutex_);
     if (state_ != EngineState::ready && state_ != EngineState::stopped) return;
     if (!voiceA_) return;
+    loop_ = loop;
 
     SubmitLoopBuffer();
     voiceA_->Start();
@@ -390,12 +404,15 @@ bool LoopAudioEngine::Seek(double positionSecs) {
         voiceA_->SubmitSourceBuffer(&buf1);
     }
 
-    // Buffer 2: the full loop, submitted immediately after.
-    XAUDIO2_BUFFER buf2 = {};
-    buf2.pAudioData = reinterpret_cast<const BYTE*>(submitPcm.data());
-    buf2.AudioBytes = static_cast<UINT32>(submitPcm.size() * sizeof(float));
-    buf2.LoopCount  = XAUDIO2_LOOP_INFINITE;
-    voiceA_->SubmitSourceBuffer(&buf2);
+    // Buffer 2: the full loop, submitted immediately after buf1. Omitted when playing
+    // one-shot (buf1 with LoopCount=0 fires OnBufferEnd at the end of buf1).
+    if (loop_) {
+        XAUDIO2_BUFFER buf2 = {};
+        buf2.pAudioData = reinterpret_cast<const BYTE*>(submitPcm.data());
+        buf2.AudioBytes = static_cast<UINT32>(submitPcm.size() * sizeof(float));
+        buf2.LoopCount  = XAUDIO2_LOOP_INFINITE;
+        voiceA_->SubmitSourceBuffer(&buf2);
+    }
 
     if (wasPlaying) {
         voiceA_->Start();
@@ -477,7 +494,9 @@ bool LoopAudioEngine::InitXAudio2() {
     wfx.nBlockAlign     = wfx.nChannels * wfx.wBitsPerSample / 8;
     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
 
-    hr = xaudio2_->CreateSourceVoice(&voiceA_, &wfx, 0, XAUDIO2_MAX_FREQ_RATIO);
+    playbackCallback_.engine = this;
+    hr = xaudio2_->CreateSourceVoice(&voiceA_, &wfx, 0, XAUDIO2_MAX_FREQ_RATIO,
+                                     &playbackCallback_);
     if (FAILED(hr)) return false;
 
     if (crossfadeDuration_ > 0) {
@@ -517,7 +536,7 @@ void LoopAudioEngine::SubmitLoopBuffer() {
     XAUDIO2_BUFFER buf = {};
     buf.pAudioData = reinterpret_cast<const BYTE*>(pcm.data());
     buf.AudioBytes = static_cast<UINT32>(pcm.size() * sizeof(float));
-    buf.LoopCount  = XAUDIO2_LOOP_INFINITE;
+    buf.LoopCount  = loop_ ? XAUDIO2_LOOP_INFINITE : 0;
     voiceA_->SubmitSourceBuffer(&buf);
 }
 
@@ -680,6 +699,16 @@ void LoopAudioEngine::TeardownDeviceNotifier() {
         deviceEnumerator_->Release();
         deviceEnumerator_ = nullptr;
     }
+}
+
+// ─── One-shot completion ──────────────────────────────────────────────────────
+
+void LoopAudioEngine::PostPlaybackComplete() {
+    // Called on an XAudio2 internal thread. Must not block or join threads.
+    // Signal monitor threads to exit; they will join on the next Play()/Stop() call.
+    crossfadeRunning_ = false;
+    amplitudeRunning_ = false;
+    SetState(EngineState::stopped);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

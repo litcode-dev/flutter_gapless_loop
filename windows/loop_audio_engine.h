@@ -73,7 +73,7 @@ public:
 
     bool   LoadFile(const std::wstring& path);
     bool   LoadUrl(const std::wstring& url);
-    void   Play();
+    void   Play(bool loop = true);
     void   Pause();
     void   Resume();
     void   Stop();
@@ -121,6 +121,7 @@ private:
     float  volume_            = 1.0f;
     float  pan_               = 0.0f;
     float  playbackRate_      = 1.0f;
+    bool   loop_              = true;  ///< true = loop indefinitely; false = play once.
 
     // ── EQ / Cutoff state ─────────────────────────────────────────────────────
     // Pending settings applied via ApplyEqToBuffers() whenever the PCM changes.
@@ -154,6 +155,21 @@ private:
     std::thread        bpmThread_;
     std::atomic<bool>  bpmRunning_{false};
 
+    // ── XAudio2 voice callback for voiceA_ (one-shot completion) ─────────────
+    // Declared as a value member so its address is stable for the lifetime of
+    // the engine (XAudio2 requires a stable callback pointer).
+    struct PlaybackVoiceCallback : public IXAudio2VoiceCallback {
+        LoopAudioEngine* engine = nullptr;
+        void STDMETHODCALLTYPE OnBufferEnd(void* pBufferContext) override;
+        void STDMETHODCALLTYPE OnStreamEnd()                              override {}
+        void STDMETHODCALLTYPE OnVoiceProcessingPassStart(UINT32)         override {}
+        void STDMETHODCALLTYPE OnVoiceProcessingPassEnd()                 override {}
+        void STDMETHODCALLTYPE OnBufferStart(void*)                       override {}
+        void STDMETHODCALLTYPE OnLoopEnd(void*)                           override {}
+        void STDMETHODCALLTYPE OnVoiceError(void*, HRESULT)               override {}
+    };
+    PlaybackVoiceCallback playbackCallback_;
+
     // ── XAudio2 voice callback for crossfade voiceB ───────────────────────────
     // Type-erased here; concrete type (XfadeVoiceCallback) lives in the .cpp.
     IXAudio2VoiceCallback* xfadeCallback_ = nullptr;
@@ -166,8 +182,9 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────────
     bool  InitXAudio2();
     void  TeardownXAudio2();
-    void  SubmitLoopBuffer();       ///< Submits active PCM to voiceA with LOOP_INFINITE.
-    void  RebuildXfadeBuffers();    ///< Precomputes mainLoopPcm_ + xfadeHeadPcm_.
+    void  SubmitLoopBuffer();         ///< Submits active PCM to voiceA; loops iff loop_==true.
+    void  RebuildXfadeBuffers();      ///< Precomputes mainLoopPcm_ + xfadeHeadPcm_.
+    void  PostPlaybackComplete();     ///< Called from PlaybackVoiceCallback on one-shot end.
     void  SetState(EngineState s);
     void  ApplyPanVolume();
     void  ApplyPanVolumeToVoice(IXAudio2SourceVoice* voice);

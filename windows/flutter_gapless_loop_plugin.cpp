@@ -61,6 +61,13 @@ static std::optional<int64_t> ArgInt(const EncodableMap* m, const char* key) {
     return std::nullopt;
 }
 
+static bool ArgBool(const EncodableMap* m, const char* key, bool fallback = true) {
+    auto* v = Arg(m, key);
+    if (!v) return fallback;
+    if (auto* b = std::get_if<bool>(v)) return *b;
+    return fallback;
+}
+
 static const std::vector<uint8_t>* ArgBytes(const EncodableMap* m, const char* key) {
     auto* v = Arg(m, key);
     if (!v) return nullptr;
@@ -376,7 +383,8 @@ void FlutterGaplessLoopPlugin::HandleLoopCall(
             result->Success();
 
     } else if (call.method_name() == "play") {
-        eng->Play();
+        const bool loop = ArgBool(args, "loop", /*fallback=*/true);
+        eng->Play(loop);
         result->Success();
 
     } else if (call.method_name() == "pause") {
