@@ -135,6 +135,9 @@ public class LoopAudioEngine {
 
     private let logger = Logger(subsystem: "com.fluttergaplessloop", category: "LoopAudioEngine")
 
+    /// Whether playback should loop (true) or play once (false). Set by play(loop:).
+    private var _loop: Bool = true
+
     // MARK: - Private: Buffer Hierarchy
 
     /// Full file, micro-fade applied at load time. Never modified after load.
@@ -315,23 +318,24 @@ public class LoopAudioEngine {
         logger.info("loadFile complete: duration=\(computedDuration)s")
     }
 
-    /// Starts gapless loop playback.
+    /// Starts playback.
     ///
-    /// In Mode A (default), this calls `scheduleBuffer(_:at:options: .loops)` on nodeA.
-    /// AVAudioEngine handles the loop at the hardware render level — no callbacks,
-    /// no scheduling gaps, no drift.
-    public func play() {
+    /// Pass `loop: false` to play through exactly once; the engine transitions to
+    /// `.stopped` when the audio reaches the end naturally.
+    /// Defaults to `true` (gapless looping) for backwards compatibility.
+    public func play(loop: Bool = true) {
         audioQueue.async { [weak self] in
             guard let self else { return }
             guard self._state == .ready || self._state == .stopped else {
                 self.logger.warning("play() ignored: state is \(self._state.rawValue)")
                 return
             }
+            self._loop = loop
             self.scheduleForCurrentMode()
             self.nodeA.play()
             self.setState(.playing)
             self.installAmplitudeTap()
-            self.logger.info("play: mode=\(String(describing: self.playbackMode))")
+            self.logger.info("play: mode=\(String(describing: self.playbackMode)) loop=\(loop)")
         }
     }
 
@@ -528,16 +532,18 @@ public class LoopAudioEngine {
             // then queue the full loop buffer with .loops for subsequent iterations.
             let effectiveEnd = self.loopBuffer != nil ? self.loopEnd : self._fileDuration
             if let remaining = try? self.extractSubBuffer(from: buf, start: time, end: effectiveEnd) {
-                // Schedule remaining frames once (no loop), then re-arm the loop.
                 self.nodeA.scheduleBuffer(remaining, at: nil, options: []) { [weak self] in
                     guard let self else { return }
                     self.audioQueue.async {
-                        // After the one-shot completes, re-arm the full loop buffer.
-                        self.nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                        if self._loop {
+                            self.nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                        } else {
+                            self.handlePlaybackComplete()
+                        }
                     }
                 }
             } else {
-                // Fallback: if extraction fails (seek near end), just reschedule normally.
+                // Fallback: scheduleForCurrentMode already checks _loop.
                 self.scheduleForCurrentMode()
             }
 
@@ -937,32 +943,44 @@ public class LoopAudioEngine {
 
     // MARK: - Private: Scheduling
 
+    /// Called when one-shot playback ends naturally (loop = false).
+    /// Must be called from within `audioQueue`.
+    private func handlePlaybackComplete() {
+        removeAmplitudeTap()
+        setState(.stopped)
+        logger.info("handlePlaybackComplete: one-shot finished naturally")
+    }
+
     /// Selects and applies the correct scheduling strategy for the current mode.
     private func scheduleForCurrentMode() {
         switch playbackMode {
         case .modeA:
-            // Mode A: Full buffer, no crossfade.
-            // scheduleBuffer with .loops runs inside the hardware render thread.
-            // The loop wrap happens within a single 256-frame render cycle (~5.8ms at 44100Hz).
-            // This is physically impossible to produce an audible gap.
             guard let buf = originalBuffer else { return }
-            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            scheduleOneOrLoop(buf)
 
         case .modeB:
-            // Mode B: Sub-buffer, no crossfade.
-            // Zero-crossing aligned sub-buffer scheduled with .loops.
             guard let buf = loopBuffer else { return }
-            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            scheduleOneOrLoop(buf)
 
         case .modeC:
-            // Mode C: Full buffer, crossfade enabled.
             guard let buf = originalBuffer else { return }
-            scheduleCrossfade(buffer: buf)
+            if _loop { scheduleCrossfade(buffer: buf) } else { scheduleOneOrLoop(buf) }
 
         case .modeD:
-            // Mode D: Sub-buffer, crossfade enabled.
             guard let buf = loopBuffer else { return }
-            scheduleCrossfade(buffer: buf)
+            if _loop { scheduleCrossfade(buffer: buf) } else { scheduleOneOrLoop(buf) }
+        }
+    }
+
+    /// Schedules `buf` on nodeA — loops forever when `_loop`, plays once when `!_loop`.
+    /// Must be called from within `audioQueue`.
+    private func scheduleOneOrLoop(_ buf: AVAudioPCMBuffer) {
+        if _loop {
+            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+        } else {
+            nodeA.scheduleBuffer(buf, at: nil, options: []) { [weak self] in
+                self?.audioQueue.async { self?.handlePlaybackComplete() }
+            }
         }
     }
 
@@ -1007,7 +1025,7 @@ public class LoopAudioEngine {
 
     /// Recursively schedules the crossfade tail on nodeB, timed to each loop boundary.
     private func scheduleNodeBCrossfade(headBuffer: AVAudioPCMBuffer, loopDuration: Double, crossfadeSecs: Double) {
-        guard nodeBIsConnected, crossfadeDuration > 0 else { return }
+        guard _loop, nodeBIsConnected, crossfadeDuration > 0 else { return }
 
         // Determine when to start the next crossfade on nodeB.
         // We want nodeB to begin playing crossfadeSecs before the loop wraps.
@@ -1497,6 +1515,9 @@ public class LoopAudioEngine {
 
     private let logger = Logger(subsystem: "com.fluttergaplessloop", category: "LoopAudioEngine")
 
+    /// Whether playback should loop (true) or play once (false). Set by play(loop:).
+    private var _loop: Bool = true
+
     // MARK: - Private: Buffer Hierarchy
 
     /// Full file, micro-fade applied at load time. Never modified after load.
@@ -1657,19 +1678,24 @@ public class LoopAudioEngine {
         logger.info("loadFile complete: duration=\(computedDuration)s")
     }
 
-    /// Starts gapless loop playback.
-    public func play() {
+    /// Starts playback.
+    ///
+    /// Pass `loop: false` to play through exactly once; the engine transitions to
+    /// `.stopped` when the audio reaches the end naturally.
+    /// Defaults to `true` (gapless looping) for backwards compatibility.
+    public func play(loop: Bool = true) {
         audioQueue.async { [weak self] in
             guard let self else { return }
             guard self._state == .ready || self._state == .stopped else {
                 self.logger.warning("play() ignored: state is \(self._state.rawValue)")
                 return
             }
+            self._loop = loop
             self.scheduleForCurrentMode()
             self.nodeA.play()
             self.setState(.playing)
             self.installAmplitudeTap()
-            self.logger.info("play: mode=\(String(describing: self.playbackMode))")
+            self.logger.info("play: mode=\(String(describing: self.playbackMode)) loop=\(loop)")
         }
     }
 
@@ -1834,7 +1860,11 @@ public class LoopAudioEngine {
                 self.nodeA.scheduleBuffer(remaining, at: nil, options: []) { [weak self] in
                     guard let self else { return }
                     self.audioQueue.async {
-                        self.nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                        if self._loop {
+                            self.nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                        } else {
+                            self.handlePlaybackComplete()
+                        }
                     }
                 }
             } else {
@@ -1921,23 +1951,43 @@ public class LoopAudioEngine {
 
     // MARK: - Private: Scheduling
 
+    /// Called when one-shot playback ends naturally (loop = false).
+    /// Must be called from within `audioQueue`.
+    private func handlePlaybackComplete() {
+        removeAmplitudeTap()
+        setState(.stopped)
+        logger.info("handlePlaybackComplete: one-shot finished naturally")
+    }
+
     private func scheduleForCurrentMode() {
         switch playbackMode {
         case .modeA:
             guard let buf = originalBuffer else { return }
-            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            scheduleOneOrLoop(buf)
 
         case .modeB:
             guard let buf = loopBuffer else { return }
-            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            scheduleOneOrLoop(buf)
 
         case .modeC:
             guard let buf = originalBuffer else { return }
-            scheduleCrossfade(buffer: buf)
+            if _loop { scheduleCrossfade(buffer: buf) } else { scheduleOneOrLoop(buf) }
 
         case .modeD:
             guard let buf = loopBuffer else { return }
-            scheduleCrossfade(buffer: buf)
+            if _loop { scheduleCrossfade(buffer: buf) } else { scheduleOneOrLoop(buf) }
+        }
+    }
+
+    /// Schedules `buf` on nodeA — loops forever when `_loop`, plays once when `!_loop`.
+    /// Must be called from within `audioQueue`.
+    private func scheduleOneOrLoop(_ buf: AVAudioPCMBuffer) {
+        if _loop {
+            nodeA.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+        } else {
+            nodeA.scheduleBuffer(buf, at: nil, options: []) { [weak self] in
+                self?.audioQueue.async { self?.handlePlaybackComplete() }
+            }
         }
     }
 
@@ -1964,7 +2014,7 @@ public class LoopAudioEngine {
     }
 
     private func scheduleNodeBCrossfade(headBuffer: AVAudioPCMBuffer, loopDuration: Double, crossfadeSecs: Double) {
-        guard nodeBIsConnected, crossfadeDuration > 0 else { return }
+        guard _loop, nodeBIsConnected, crossfadeDuration > 0 else { return }
 
         guard let lastRender = nodeA.lastRenderTime,
               let playerTime = nodeA.playerTime(forNodeTime: lastRender) else {
